@@ -185,7 +185,7 @@ MakeClusters(const std::vector<std::string> &treeNames, const std::vector<std::s
    // 16 * 2 * TTreeProcessorMT::GetMaxTasksPerFilePerWorker() clusters will be created, at most
    // 16 * TTreeProcessorMT::GetMaxTasksPerFilePerWorker() per file.
 
-   const auto maxTasksPerFile = TTreeProcessorMT::GetMaxTasksPerFilePerWorker() * ROOT::GetThreadPoolSize();
+   const auto maxTasksPerFile = TTreeProcessorMT::GetMaxTasksPerFile();
    std::vector<std::vector<EntryCluster>> eventRangesPerFile(clustersPerFile.size());
    auto clustersPerFileIt = clustersPerFile.begin();
    auto eventRangesPerFileIt = eventRangesPerFile.begin();
@@ -289,7 +289,7 @@ static std::vector<std::string> GetTreeFullPaths(const TTree &tree)
 
 namespace ROOT {
 
-unsigned int TTreeProcessorMT::fgMaxTasksPerFilePerWorker = 24U;
+unsigned int TTreeProcessorMT::fgMaxTasksPerFile = 0U;
 
 namespace Internal {
 
@@ -637,9 +637,9 @@ void TTreeProcessorMT::Process(std::function<void(TTreeReader &)> func)
 ////////////////////////////////////////////////////////////////////////
 /// \brief Sets the maximum number of tasks created per file, per worker.
 /// \return The maximum number of tasks created per file, per worker
-unsigned int TTreeProcessorMT::GetMaxTasksPerFilePerWorker()
+unsigned int TTreeProcessorMT::GetMaxTasksPerFile()
 {
-   return fgMaxTasksPerFilePerWorker;
+   return fgMaxTasksPerFile > 0 ? fgMaxTasksPerFile : 24U*ROOT::GetThreadPoolSize();
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -649,7 +649,7 @@ unsigned int TTreeProcessorMT::GetMaxTasksPerFilePerWorker()
 /// This allows to create a reasonable number of tasks even if any of the
 /// processed files features a bad clustering, for example with a lot of
 /// entries and just a few entries per cluster.
-void TTreeProcessorMT::SetMaxTasksPerFilePerWorker(unsigned int maxTasksPerFile)
+void TTreeProcessorMT::SetMaxTasksPerFile(unsigned int maxTasksPerFile)
 {
-   fgMaxTasksPerFilePerWorker = maxTasksPerFile;
+   fgMaxTasksPerFile = maxTasksPerFile;
 }

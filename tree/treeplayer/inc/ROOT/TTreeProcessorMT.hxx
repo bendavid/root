@@ -97,7 +97,7 @@ private:
 
    Internal::FriendInfo GetFriendInfo(TTree &tree);
    std::vector<std::string> FindTreeNames();
-   static unsigned int fgMaxTasksPerFilePerWorker;
+   static unsigned int fgMaxTasksPerFile;
    std::mutex fLock;
 
 public:
@@ -108,8 +108,8 @@ public:
    TTreeProcessorMT(TTree &tree, UInt_t nThreads = 0u);
 
    void Process(std::function<void(TTreeReader &)> func);
-   static void SetMaxTasksPerFilePerWorker(unsigned int m);
-   static unsigned int GetMaxTasksPerFilePerWorker();
+   static void SetMaxTasksPerFile(unsigned int m);
+   static unsigned int GetMaxTasksPerFile();
 };
 
 } // End of namespace ROOT
