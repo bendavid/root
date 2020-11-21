@@ -355,6 +355,14 @@ TTreeView::GetTreeReader(Long64_t start, Long64_t end, const std::vector<std::st
          }
       }
    }
+   // force loading of tree to avoid lock contention later on
+   Int_t treenum = 0;
+   if (hasEntryList) {
+      // FIXME is this correct?
+      fEntryList->GetEntryAndTree(0, treenum);
+   }
+   fChain->LoadTree(treenum);
+   
    auto reader = std::make_unique<TTreeReader>(fChain.get(), fEntryList.get());
    reader->SetEntriesRange(start, end);
    return reader;
