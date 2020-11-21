@@ -129,7 +129,7 @@ using ClustersAndEntries = std::pair<std::vector<std::vector<EntryCluster>>, std
 ////////////////////////////////////////////////////////////////////////
 /// Return a vector of cluster boundaries for the given tree and files.
 static ClustersAndEntries
-MakeClusters(const std::vector<std::string> &treeNames, const std::vector<std::string> &fileNames)
+MakeClusters(const std::vector<std::string> &treeNames, const std::vector<std::string> &fileNames, std::mutex &lock)
 {
    // Note that as a side-effect of opening all files that are going to be used in the
    // analysis once, all necessary streamers will be loaded into memory.
@@ -139,6 +139,8 @@ MakeClusters(const std::vector<std::string> &treeNames, const std::vector<std::s
    std::vector<Long64_t> entriesPerFile;
    entriesPerFile.reserve(nFileNames);
    Long64_t offset = 0ll;
+   // mutex lock to avoid deadlockss in TFile::Open() and Get()
+   lock.lock();
    for (auto i = 0u; i < nFileNames; ++i) {
       const auto &fileName = fileNames[i];
       const auto &treeName = treeNames[i];
@@ -170,6 +172,7 @@ MakeClusters(const std::vector<std::string> &treeNames, const std::vector<std::s
       clustersPerFile.emplace_back(std::move(clusters));
       entriesPerFile.emplace_back(entries);
    }
+   lock.unlock();
 
    // Here we "fuse" together clusters if the number of clusters is to big with respect to
    // the number of slots, otherwise we can incurr in an overhead which is so big to make
@@ -574,7 +577,7 @@ void TTreeProcessorMT::Process(std::function<void(TTreeReader &)> func)
    const bool shouldRetrieveAllClusters = hasFriends || hasEntryList;
    ClustersAndEntries clusterAndEntries{};
    if (shouldRetrieveAllClusters) {
-      clusterAndEntries = MakeClusters(fTreeNames, fFileNames);
+      clusterAndEntries = MakeClusters(fTreeNames, fFileNames, fLock);
       if (hasEntryList)
          clusterAndEntries.first = ConvertToElistClusters(std::move(clusterAndEntries.first), fEntryList, fTreeNames,
                                                           fFileNames, clusterAndEntries.second);
@@ -596,7 +599,7 @@ void TTreeProcessorMT::Process(std::function<void(TTreeReader &)> func)
       const auto &theseTrees = shouldRetrieveAllClusters ? fTreeNames : std::vector<std::string>({fTreeNames[fileIdx]});
       // Evaluate clusters (with local entry numbers) and number of entries for this file, if needed
       const auto theseClustersAndEntries =
-         shouldRetrieveAllClusters ? ClustersAndEntries{} : MakeClusters(theseTrees, theseFiles);
+         shouldRetrieveAllClusters ? ClustersAndEntries{} : MakeClusters(theseTrees, theseFiles, fLock);
 
       // All clusters for the file to process, either with global or local entry numbers
       const auto &thisFileClusters = shouldRetrieveAllClusters ? clusters[fileIdx] : theseClustersAndEntries.first[0];
@@ -606,8 +609,11 @@ void TTreeProcessorMT::Process(std::function<void(TTreeReader &)> func)
          shouldRetrieveAllClusters ? entries : std::vector<Long64_t>({theseClustersAndEntries.second[0]});
 
       auto processCluster = [&](const EntryCluster &c) {
+         // mutex lock to avoid deadlocks in TChain::Add()
+         fLock.lock();
          auto r = fTreeView->GetTreeReader(c.start, c.end, theseTrees, theseFiles, fFriendInfo, fEntryList,
                                            theseEntries, friendEntries);
+         fLock.unlock();
          func(*r);
       };
 

@@ -28,6 +28,7 @@
 #include <functional>
 #include <utility> // std::pair
 #include <vector>
+#include <mutex>
 
 /** \class TTreeView
     \brief A helper class that encapsulates a file and a tree.
@@ -97,6 +98,7 @@ private:
    Internal::FriendInfo GetFriendInfo(TTree &tree);
    std::vector<std::string> FindTreeNames();
    static unsigned int fgMaxTasksPerFilePerWorker;
+   std::mutex fLock;
 
 public:
    TTreeProcessorMT(std::string_view filename, std::string_view treename = "", UInt_t nThreads = 0u);
