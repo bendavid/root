@@ -38,8 +38,8 @@ struct UniqueLockRecurseCount {
    using local_t = LocalCounts*;
 
    local_t GetLocal(){
-      TTHREAD_TLS_DECL(LocalCounts, gLocal);
-      return &gLocal;
+       static thread_local LocalCounts unique_local_counts;
+       return &unique_local_counts;
    }
 
    Hint_t *IncrementReadCount(local_t &local) {
