@@ -416,6 +416,8 @@ template class TReentrantRWLock<std::mutex, ROOT::Internal::RecurseCounts>;
 template class TReentrantRWLock<ROOT::TSpinMutex, ROOT::Internal::UniqueLockRecurseCount>;
 template class TReentrantRWLock<TMutex, ROOT::Internal::UniqueLockRecurseCount>;
 template class TReentrantRWLock<std::mutex, ROOT::Internal::UniqueLockRecurseCount>;
+template class TReentrantRWLock<std::mutex, ROOT::Internal::RecurseCountsTBB>;
+template class TReentrantRWLock<std::mutex, ROOT::Internal::RecurseCountsTBBUnique>;
 
 #if __cplusplus >= 201402L
 template class TReentrantRWLock<std::shared_timed_mutex, ROOT::Internal::RecurseCountsShared>;

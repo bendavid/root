@@ -24,6 +24,7 @@
 #if __cplusplus >= 201402L
 #include <shared_mutex>
 #endif
+#include "tbb/enumerable_thread_specific.h"
 
 namespace ROOT {
 namespace Internal {
@@ -43,6 +44,124 @@ struct UniqueLockRecurseCount {
    local_t GetLocal(){
       TTHREAD_TLS_DECL(LocalCounts, gLocal);
       return &gLocal;
+   }
+
+   Hint_t *IncrementReadCount(local_t &local) {
+      ++(local->fReadersCount);
+      return reinterpret_cast<TVirtualRWMutex::Hint_t *>(&(local->fReadersCount));
+   }
+
+   template <typename MutexT>
+   Hint_t *IncrementReadCount(local_t &local, MutexT &) {
+      return IncrementReadCount(local);
+   }
+
+   Hint_t *DecrementReadCount(local_t &local) {
+      --(local->fReadersCount);
+      return reinterpret_cast<TVirtualRWMutex::Hint_t *>(&(local->fReadersCount));
+   }
+
+   template <typename MutexT>
+   Hint_t *DecrementReadCount(local_t &local, MutexT &) {
+      return DecrementReadCount(local);
+   }
+
+   void ResetReadCount(local_t &local, int newvalue) {
+      local->fReadersCount = newvalue;
+   }
+
+   bool IsCurrentWriter(local_t &local) { return local->fIsWriter; }
+   bool IsNotCurrentWriter(local_t &local) { return !local->fIsWriter; }
+
+   void SetIsWriter(local_t &local)
+   {
+      // if (fWriteRecurse == std::numeric_limits<decltype(fWriteRecurse)>::max()) {
+      //    ::Fatal("TRWSpinLock::WriteLock", "Too many recursions in TRWSpinLock!");
+      // }
+      ++fWriteRecurse;
+      local->fIsWriter = true;
+   }
+
+   void DecrementWriteCount() { --fWriteRecurse; }
+
+   void ResetIsWriter(local_t &local) { local->fIsWriter = false; }
+
+   size_t &GetLocalReadersCount(local_t &local) { return local->fReadersCount; }
+};
+
+struct RecurseCountsTBB {
+   using Hint_t = TVirtualRWMutex::Hint_t;
+
+   struct LocalCounts {
+      size_t fReadersCount = 0;
+      bool fIsWriter = false;
+   };
+   tbb::enumerable_thread_specific<LocalCounts> fLocalCounts;
+   size_t fWriteRecurse = 0; ///<! Number of re-entry in the lock by the same thread.
+
+   using local_t = LocalCounts*;
+
+   local_t GetLocal(){
+      return &fLocalCounts.local();
+   }
+
+   Hint_t *IncrementReadCount(local_t &local) {
+      ++(local->fReadersCount);
+      return reinterpret_cast<TVirtualRWMutex::Hint_t *>(&(local->fReadersCount));
+   }
+
+   template <typename MutexT>
+   Hint_t *IncrementReadCount(local_t &local, MutexT &) {
+      return IncrementReadCount(local);
+   }
+
+   Hint_t *DecrementReadCount(local_t &local) {
+      --(local->fReadersCount);
+      return reinterpret_cast<TVirtualRWMutex::Hint_t *>(&(local->fReadersCount));
+   }
+
+   template <typename MutexT>
+   Hint_t *DecrementReadCount(local_t &local, MutexT &) {
+      return DecrementReadCount(local);
+   }
+
+   void ResetReadCount(local_t &local, int newvalue) {
+      local->fReadersCount = newvalue;
+   }
+
+   bool IsCurrentWriter(local_t &local) { return local->fIsWriter; }
+   bool IsNotCurrentWriter(local_t &local) { return !local->fIsWriter; }
+
+   void SetIsWriter(local_t &local)
+   {
+      // if (fWriteRecurse == std::numeric_limits<decltype(fWriteRecurse)>::max()) {
+      //    ::Fatal("TRWSpinLock::WriteLock", "Too many recursions in TRWSpinLock!");
+      // }
+      ++fWriteRecurse;
+      local->fIsWriter = true;
+   }
+
+   void DecrementWriteCount() { --fWriteRecurse; }
+
+   void ResetIsWriter(local_t &local) { local->fIsWriter = false; }
+
+   size_t &GetLocalReadersCount(local_t &local) { return local->fReadersCount; }
+};
+
+struct RecurseCountsTBBUnique {
+   using Hint_t = TVirtualRWMutex::Hint_t;
+
+   struct LocalCounts {
+      size_t fReadersCount = 0;
+      bool fIsWriter = false;
+   };
+   tbb::enumerable_thread_specific<LocalCounts, tbb::cache_aligned_allocator<LocalCounts>, tbb::ets_key_per_instance> fLocalCounts;
+   size_t fWriteRecurse = 0; ///<! Number of re-entry in the lock by the same thread.
+
+   using local_t = LocalCounts*;
+
+   local_t GetLocal(){
+      return &fLocalCounts.local();
    }
 
    Hint_t *IncrementReadCount(local_t &local) {

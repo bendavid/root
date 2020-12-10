@@ -66,6 +66,8 @@ ROOT_STANDARD_LIBRARY_PACKAGE(Thread
     -writeEmptyRootPCM 
   DEPENDENCIES
     Core
+  BUILTINS
+    TBB
   INSTALL_OPTIONS ${installoptions}
 )
 
@@ -97,5 +99,9 @@ else()
     src/TPosixThreadFactory.cxx
   )
 endif()
+
+target_include_directories(Thread SYSTEM PRIVATE ${TBB_INCLUDE_DIRS})
+target_link_libraries(Thread PRIVATE ${TBB_LIBRARIES})
+set_target_properties(Thread PROPERTIES COMPILE_FLAGS "${TBB_CXXFLAGS}")
 
 ROOT_ADD_TEST_SUBDIRECTORY(test)

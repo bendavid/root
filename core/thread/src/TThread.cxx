@@ -353,15 +353,16 @@ void TThread::Init()
    {
      R__LOCKGUARD(gGlobalMutex);
      if (!ROOT::gCoreMutex) {
-        // To avoid dead locks, caused by shared library opening and/or static initialization
-        // taking the same lock as 'tls_get_addr_tail', we can not use UniqueLockRecurseCount.
-#if __cplusplus >= 201703L
-        ROOT::gCoreMutex = new ROOT::TRWMutexImp<std::shared_mutex, ROOT::Internal::RecurseCountsShared>();
-#elif __cplusplus >= 201402L
-        ROOT::gCoreMutex = new ROOT::TRWMutexImp<std::shared_timed_mutex, ROOT::Internal::RecurseCountsShared>();
-#else
-        ROOT::gCoreMutex = new ROOT::TRWMutexImp<std::mutex, ROOT::Internal::RecurseCounts>();
-#endif
+        ROOT::gCoreMutex = new ROOT::TRWMutexImp<std::mutex, ROOT::Internal::RecurseCountsTBBUnique>();
+//         // To avoid dead locks, caused by shared library opening and/or static initialization
+//         // taking the same lock as 'tls_get_addr_tail', we can not use UniqueLockRecurseCount.
+// #if __cplusplus >= 201703L
+//         ROOT::gCoreMutex = new ROOT::TRWMutexImp<std::shared_mutex, ROOT::Internal::RecurseCountsShared>();
+// #elif __cplusplus >= 201402L
+//         ROOT::gCoreMutex = new ROOT::TRWMutexImp<std::shared_timed_mutex, ROOT::Internal::RecurseCountsShared>();
+// #else
+//         ROOT::gCoreMutex = new ROOT::TRWMutexImp<std::mutex, ROOT::Internal::RecurseCounts>();
+// #endif
      }
      gInterpreterMutex = ROOT::gCoreMutex;
      gROOTMutex = gInterpreterMutex;

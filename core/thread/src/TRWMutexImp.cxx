@@ -122,5 +122,7 @@ template class TRWMutexImp<std::shared_timed_mutex, ROOT::Internal::RecurseCount
 #if __cplusplus >= 201703L
 template class TRWMutexImp<std::shared_mutex, ROOT::Internal::RecurseCountsShared>;
 #endif
+template class TRWMutexImp<std::mutex, ROOT::Internal::RecurseCountsTBB>;
+template class TRWMutexImp<std::mutex, ROOT::Internal::RecurseCountsTBBUnique>;
 
 } // End of namespace ROOT
