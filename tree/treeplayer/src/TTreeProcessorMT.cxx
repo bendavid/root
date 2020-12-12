@@ -285,7 +285,7 @@ namespace ROOT {
 
 unsigned int TTreeProcessorMT::fgMaxTasksPerFilePerWorker = 24U;
 
-unsigned int TTreeProcessorMT::fgMaxTasksPerWorker = 8U;
+unsigned int TTreeProcessorMT::fgTasksPerWorker = 8U;
 
 namespace Internal {
 
@@ -564,7 +564,7 @@ void TTreeProcessorMT::Process(std::function<void(TTreeReader &)> func)
    const std::vector<std::vector<std::string>> &friendFileNames = fFriendInfo.fFriendFileNames;
 
    // compute number of tasks per file
-   const unsigned int maxTasksPerFile = std::max(1UL, GetMaxTasksPerFilePerWorker()*fPool.GetPoolSize()/fFileNames.size());
+   const unsigned int maxTasksPerFile = std::ceil(float(GetTasksPerWorker()*fPool.GetPoolSize())/float(fFileNames.size()));
    
    // If an entry list or friend trees are present, we need to generate clusters with global entry numbers,
    // so we do it here for all files.
@@ -630,9 +630,9 @@ unsigned int TTreeProcessorMT::GetMaxTasksPerFilePerWorker()
    return fgMaxTasksPerFilePerWorker;
 }
 
-unsigned int TTreeProcessorMT::GetMaxTasksPerWorker()
+unsigned int TTreeProcessorMT::GetTasksPerWorker()
 {
-   return fgMaxTasksPerWorker;
+   return fgTasksPerWorker;
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -647,7 +647,7 @@ void TTreeProcessorMT::SetMaxTasksPerFilePerWorker(unsigned int maxTasksPerFile)
    fgMaxTasksPerFilePerWorker = maxTasksPerFile;
 }
 
-void TTreeProcessorMT::SetMaxTasksPerWorker(unsigned int maxTasksPerWorker)
+void TTreeProcessorMT::SetTasksPerWorker(unsigned int tasksPerWorker)
 {
-   fgMaxTasksPerWorker = maxTasksPerWorker;
+   fgTasksPerWorker = tasksPerWorker;
 }
