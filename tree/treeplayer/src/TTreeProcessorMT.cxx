@@ -285,7 +285,7 @@ namespace ROOT {
 
 unsigned int TTreeProcessorMT::fgMaxTasksPerFilePerWorker = 24U;
 
-unsigned int TTreeProcessorMT::fgTasksPerWorker = 8U;
+unsigned int TTreeProcessorMT::fgTasksPerWorker = 24U;
 
 namespace Internal {
 
