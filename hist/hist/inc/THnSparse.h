@@ -165,7 +165,7 @@ class THnSparse: public THnBase {
    void Reset(Option_t* option = "");
    void Sumw2();
 
-   ClassDef(THnSparse, 3); // Interfaces of sparse n-dimensional histogram
+   ClassDef(THnSparse, 4); // Interfaces of sparse n-dimensional histogram
 };
 
 
@@ -213,7 +213,7 @@ class THnSparseT: public THnSparse {
 
    TArray* GenerateArray() const { return new CONT(GetChunkSize()); }
  private:
-   ClassDef(THnSparseT, 1); // Sparse n-dimensional histogram with templated content
+   ClassDef(THnSparseT, 2); // Sparse n-dimensional histogram with templated content
 };
 
 typedef THnSparseT<TArrayD> THnSparseD;
