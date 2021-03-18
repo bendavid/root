@@ -200,6 +200,15 @@ Long64_t InterpreterCalc(const std::string &code, const std::string &context = "
 /// Whether custom column with name colName is an "internal" column such as rdfentry_ or rdfslot_
 bool IsInternalColumn(std::string_view colName);
 
+#if __cplusplus >= 201703L
+template<class... Ts>
+using Conjunction = std::conjunction<Ts...>;
+#else
+template<bool...> struct Bool_pack{};
+template<class... Ts>
+using Conjunction = std::is_same<Bool_pack<true,Ts::value...>, Bool_pack<Ts::value..., true>>;
+#endif
+
 } // end NS RDF
 } // end NS Internal
 } // end NS ROOT

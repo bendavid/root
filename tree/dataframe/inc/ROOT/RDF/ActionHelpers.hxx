@@ -306,141 +306,71 @@ public:
 
    void InitTask(TTreeReader *, unsigned int) {}
 
-   void Exec(unsigned int slot, double x0) // 1D histos
-   {
-      fObjects[slot]->Fill(x0);
+   // all scalar arguments
+   template <typename... ValTypes,
+            typename std::enable_if<Conjunction<std::is_convertible<ValTypes, double>...>::value, int>::type = 0>
+   void Exec(unsigned int slot, ValTypes... x) {
+      fObjects[slot]->Fill(x...);
    }
+   
+   // at least one container argument
+   template <typename... Xs,
+               typename std::enable_if<!Conjunction<std::is_convertible<Xs, double>...>::value, int>::type = 0>
+   void Exec(unsigned int slot, const Xs&... xs) {
+      // array of bools keeping track of which inputs are containers
+      constexpr std::array<bool, sizeof...(Xs)> isContainer = {{ !std::is_convertible<Xs, double>::value... }};
 
-   void Exec(unsigned int slot, double x0, double x1) // 1D weighted and 2D histos
-   {
-      fObjects[slot]->Fill(x0, x1);
+      // index of the first container input
+      constexpr auto find_idx_true = [](auto const& arr) {
+         for (size_t i = 0; i < arr.size(); ++i) {
+            if (arr[i]) return i;
+         }
+         return arr.size();
+      };
+      
+      constexpr size_t colidx = find_idx_true(isContainer);
+      static_assert(colidx < sizeof...(Xs));
+
+      auto get_size = [](auto const& x)->size_t {
+         if constexpr(std::is_convertible<decltype(x), double>::value) {
+            return 1;
+         }
+         else {
+            return std::size(x);
+         }
+      };
+      
+      const std::array<size_t, sizeof...(xs)> sizes = {{ get_size(xs)... }};
+      
+      for (size_t i = 0; i < sizeof...(xs); ++i) {
+         if (isContainer[i] && sizes[i] != sizes[colidx]) {
+            throw std::runtime_error("Cannot fill histogram with values in containers of different sizes.");
+         }
+      }
+      
+      auto at = [](auto const& x, size_t i) {
+         if constexpr(std::is_convertible<decltype(x), double>::value) {
+            return x;
+         }
+         else {
+            return x[i];
+         }
+      };
+      
+      auto thisSlotH = fObjects[slot];
+      
+      for (size_t i=0; i < sizes[colidx]; ++i) {
+         thisSlotH->Fill(at(xs, i)...);
+      }
+      
    }
-
-   void Exec(unsigned int slot, double x0, double x1, double x2) // 2D weighted and 3D histos
-   {
-      fObjects[slot]->Fill(x0, x1, x2);
-   }
-
-   void Exec(unsigned int slot, double x0, double x1, double x2, double x3) // 3D weighted histos
-   {
-      fObjects[slot]->Fill(x0, x1, x2, x3);
-   }
-
-   template <typename X0, typename std::enable_if<IsDataContainer<X0>::value || std::is_same<X0, std::string>::value, int>::type = 0>
-   void Exec(unsigned int slot, const X0 &x0s)
+   
+   // special case for string
+   void Exec(unsigned int slot, const std::string &x0s)
    {
       auto thisSlotH = fObjects[slot];
       for (auto x0 = x0s.begin(); x0 != x0s.end(); x0++) {
-         thisSlotH->Fill(*x0); // TODO: Can be optimised in case T == vector<double>
-      }
-   }
-
-   // ROOT-10092: Filling with a scalar as first column and a collection as second is not supported
-   template <typename X0, typename X1,
-             typename std::enable_if<IsDataContainer<X1>::value && !IsDataContainer<X0>::value, int>::type = 0>
-   void Exec(unsigned int , const X0 &, const X1 &)
-   {
-      throw std::runtime_error(
-        "Cannot fill object if the type of the first column is a scalar and the one of the second a container.");
-   }
-
-   template <typename X0, typename X1,
-             typename std::enable_if<IsDataContainer<X0>::value && IsDataContainer<X1>::value, int>::type = 0>
-   void Exec(unsigned int slot, const X0 &x0s, const X1 &x1s)
-   {
-      auto thisSlotH = fObjects[slot];
-      if (x0s.size() != x1s.size()) {
-         throw std::runtime_error("Cannot fill histogram with values in containers of different sizes.");
-      }
-      auto x0sIt = std::begin(x0s);
-      const auto x0sEnd = std::end(x0s);
-      auto x1sIt = std::begin(x1s);
-      for (; x0sIt != x0sEnd; x0sIt++, x1sIt++) {
-         thisSlotH->Fill(*x0sIt, *x1sIt); // TODO: Can be optimised in case T == vector<double>
-      }
-   }
-
-   template <typename X0, typename W,
-             typename std::enable_if<IsDataContainer<X0>::value && !IsDataContainer<W>::value, int>::type = 0>
-   void Exec(unsigned int slot, const X0 &x0s, const W w)
-   {
-      auto thisSlotH = fObjects[slot];
-      for (auto &&x : x0s) {
-         thisSlotH->Fill(x, w);
-      }
-   }
-
-   template <typename X0, typename X1, typename X2,
-             typename std::enable_if<IsDataContainer<X0>::value && IsDataContainer<X1>::value && IsDataContainer<X2>::value,
-                                     int>::type = 0>
-   void Exec(unsigned int slot, const X0 &x0s, const X1 &x1s, const X2 &x2s)
-   {
-      auto thisSlotH = fObjects[slot];
-      if (!(x0s.size() == x1s.size() && x1s.size() == x2s.size())) {
-         throw std::runtime_error("Cannot fill histogram with values in containers of different sizes.");
-      }
-      auto x0sIt = std::begin(x0s);
-      const auto x0sEnd = std::end(x0s);
-      auto x1sIt = std::begin(x1s);
-      auto x2sIt = std::begin(x2s);
-      for (; x0sIt != x0sEnd; x0sIt++, x1sIt++, x2sIt++) {
-         thisSlotH->Fill(*x0sIt, *x1sIt, *x2sIt); // TODO: Can be optimised in case T == vector<double>
-      }
-   }
-
-   template <typename X0, typename X1, typename W,
-             typename std::enable_if<IsDataContainer<X0>::value && IsDataContainer<X1>::value && !IsDataContainer<W>::value,
-                                     int>::type = 0>
-   void Exec(unsigned int slot, const X0 &x0s, const X1 &x1s, const W w)
-   {
-      auto thisSlotH = fObjects[slot];
-      if (x0s.size() != x1s.size()) {
-         throw std::runtime_error("Cannot fill histogram with values in containers of different sizes.");
-      }
-      auto x0sIt = std::begin(x0s);
-      const auto x0sEnd = std::end(x0s);
-      auto x1sIt = std::begin(x1s);
-      for (; x0sIt != x0sEnd; x0sIt++, x1sIt++) {
-         thisSlotH->Fill(*x0sIt, *x1sIt, w); // TODO: Can be optimised in case T == vector<double>
-      }
-   }
-
-   template <typename X0, typename X1, typename X2, typename X3,
-             typename std::enable_if<IsDataContainer<X0>::value && IsDataContainer<X1>::value && IsDataContainer<X2>::value &&
-                                        IsDataContainer<X3>::value,
-                                     int>::type = 0>
-   void Exec(unsigned int slot, const X0 &x0s, const X1 &x1s, const X2 &x2s, const X3 &x3s)
-   {
-      auto thisSlotH = fObjects[slot];
-      if (!(x0s.size() == x1s.size() && x1s.size() == x2s.size() && x1s.size() == x3s.size())) {
-         throw std::runtime_error("Cannot fill histogram with values in containers of different sizes.");
-      }
-      auto x0sIt = std::begin(x0s);
-      const auto x0sEnd = std::end(x0s);
-      auto x1sIt = std::begin(x1s);
-      auto x2sIt = std::begin(x2s);
-      auto x3sIt = std::begin(x3s);
-      for (; x0sIt != x0sEnd; x0sIt++, x1sIt++, x2sIt++, x3sIt++) {
-         thisSlotH->Fill(*x0sIt, *x1sIt, *x2sIt, *x3sIt); // TODO: Can be optimised in case T == vector<double>
-      }
-   }
-
-   template <typename X0, typename X1, typename X2, typename W,
-             typename std::enable_if<IsDataContainer<X0>::value && IsDataContainer<X1>::value && IsDataContainer<X2>::value &&
-                                        !IsDataContainer<W>::value,
-                                     int>::type = 0>
-   void Exec(unsigned int slot, const X0 &x0s, const X1 &x1s, const X2 &x2s, const W w)
-   {
-      auto thisSlotH = fObjects[slot];
-      if (!(x0s.size() == x1s.size() && x1s.size() == x2s.size())) {
-         throw std::runtime_error("Cannot fill histogram with values in containers of different sizes.");
-      }
-      auto x0sIt = std::begin(x0s);
-      const auto x0sEnd = std::end(x0s);
-      auto x1sIt = std::begin(x1s);
-      auto x2sIt = std::begin(x2s);
-      for (; x0sIt != x0sEnd; x0sIt++, x1sIt++, x2sIt++) {
-         thisSlotH->Fill(*x0sIt, *x1sIt, *x2sIt, w);
+         thisSlotH->Fill(*x0);
       }
    }
 
