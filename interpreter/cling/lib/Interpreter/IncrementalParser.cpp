@@ -995,7 +995,7 @@ namespace cling {
     std::vector<ASTTPtr_t> ASTTransformers;
     ASTTransformers.emplace_back(new AutoSynthesizer(TheSema));
     ASTTransformers.emplace_back(new EvaluateTSynthesizer(TheSema));
-    if (hasCodeGenerator() && !m_Interpreter->getOptions().NoRuntime) {
+    if (false && hasCodeGenerator() && !m_Interpreter->getOptions().NoRuntime) {
       // Don't protect against crashes if we cannot run anything.
       // cling might also be in a PCH-generation mode; don't inject our Sema
       // pointer into the PCH.
