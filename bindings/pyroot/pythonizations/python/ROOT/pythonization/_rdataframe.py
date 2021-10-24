@@ -155,7 +155,9 @@ def _histo_profile(self, fixed_args, *args):
     # pythonised and the class of the model object to construct
     # args: arguments passed by the user when he calls e.g Histo1D
 
-    original_method_name, model_class = fixed_args
+    from cppyy.gbl import ROOT
+
+    original_method_name, method_name, model_class = fixed_args
 
     # Get the "original" method of the RDataFrame instantiation
     original_method = getattr(self, original_method_name)
@@ -167,17 +169,59 @@ def _histo_profile(self, fixed_args, *args):
         # Call the original implementation of the method
         # with the model as first argument
         if len(args) > 1:
-            res = original_method(model, *args[1:])
+            coltypes = self.ValidatedArgTypes(args[1:], method_name, True)
+            coltypes = [str(coltype) for coltype in coltypes]
+            res = original_method[tuple(coltypes)](model, *args[1:])
         else:
             # Covers the case of the overloads with only model passed
             # as argument
+            # Can't infer types here
             res = original_method(model)
     # If the first argument is not a tuple, nothing to do, just call
     # the original implementation
     else:
-        res = original_method(*args)
+        modeltypes = (ROOT.RDF.TH1DModel,
+                      ROOT.RDF.TH2DModel,
+                      ROOT.RDF.TH3DModel,
+                      ROOT.RDF.TProfile1DModel,
+                      ROOT.RDF.TProfile2DModel)
+        if args and type(args[0]) in modeltypes:
+            colnames = args[1:]
+        else:
+            colnames = args
+        coltypes = self.ValidatedArgTypes(colnames, method_name, True)
+        coltypes = [str(coltype) for coltype in coltypes]
+        res = original_method[tuple(coltypes)](*args)
 
     return res
+
+def _call_with_types(self, fixed_args, *args):
+    original_method_name, method_name = fixed_args
+    original_method = getattr(self, original_method_name)
+    coltypes = self.ValidatedArgTypes(args, method_name, True)
+    coltypes = [str(coltype) for coltype in coltypes]
+    return original_method[tuple(coltypes)](*args)
+
+def _call_with_types_helper_list(self, fixed_args, *args):
+    original_method_name, method_name = fixed_args
+    original_method = getattr(self, original_method_name)
+    coltypes = self.ValidatedArgTypes(args[1], method_name, True)
+    coltypes = [str(coltype) for coltype in coltypes]
+    return original_method[tuple(coltypes)](*args)
+
+def _cache(self, fixed_args, *args):
+    original_method_name, method_name = fixed_args
+    original_method = getattr(self, original_method_name)
+    coltypes = self.ValidatedArgTypes(args[0], method_name, True)
+    coltypes = [str(coltype) for coltype in coltypes]
+    return original_method[tuple(coltypes)](*args)
+
+def _snapshot(self, fixed_args, *args):
+    original_method_name, method_name = fixed_args
+    original_method = getattr(self, original_method_name)
+    coltypes = self.ValidatedArgTypes(args[2], method_name, True)
+    coltypes = [str(coltype) for coltype in coltypes]
+    return original_method[tuple(coltypes)](*args)
 
 class RDFPythonHelper:
     def __init__(self):
@@ -481,7 +525,7 @@ def pythonize_rdataframe(klass, name):
             original_method_name = '_Original' + method_name
             setattr(klass, original_method_name, getattr(klass, method_name))
             # Fixed arguments to construct a partialmethod
-            fixed_args = (original_method_name, model_class)
+            fixed_args = (original_method_name, method_name, model_class)
             # Replace the original implementation of the method
             # by a generic function _histo_profile with
             # (original_method_name, model_class) as fixed argument
@@ -490,7 +534,23 @@ def pythonize_rdataframe(klass, name):
         helper = RDFPythonHelper()
 
         methods_with_pythonization = {
+                'Graph'  :  _call_with_types,
+                'Max'  :  _call_with_types,
+                'Mean'  :  _call_with_types,
+                'Min'  :  _call_with_types,
+                'StdDev'  :  _call_with_types,
+                'Sum'  :  _call_with_types,
+                'Take'  :  _call_with_types,
                 'Define'  :  helper._define,
+                'DefineSlot'  :  helper._define,
+                'DefineSlotEntry'  :  helper._define,
+                'Book'  :  _call_with_types_helper_list,
+                'Fill'  :  _call_with_types_helper_list,
+                # FIXME replacing these causes weird errors on initialization
+                #'ForEach'  :  _call_with_types_helper_list,
+                #'ForEachSlot'  :  _call_with_types_helper_list,
+                'Cache'  :  _cache,
+                'Snapshot'  :  _snapshot,
           }
 
         for method_name, method, in methods_with_pythonization.items():
