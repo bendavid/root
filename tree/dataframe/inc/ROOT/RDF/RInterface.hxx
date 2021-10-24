@@ -36,6 +36,8 @@
 #include "TProfile.h"
 #include "TProfile2D.h"
 #include "TStatistic.h"
+#include "TInterpreter.h"
+#include "TMethod.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -2764,22 +2766,72 @@ private:
       const auto validColumnNames = GetValidatedColumnNames(realNColumns, columns);
       const unsigned int nSlots = fLoopManager->GetNSlots();
 
-      auto *tree = fLoopManager->GetTree();
-      auto *helperArgOnHeap = RDFInternal::MakeSharedOnHeap(helperArg);
+      // retrieve type of result of the action as a string
+      auto helperArgClass = TClass::GetClass(typeid(std::shared_ptr<HelperArgType>));
+      if (!helperArgClass) {
+          std::string exceptionText = "An error occurred while inferring the result type of an operation.";
+          throw std::runtime_error(exceptionText.c_str());
+      }
+      const auto helperArgClassName = helperArgClass->GetName();
 
-      auto upcastNodeOnHeap = RDFInternal::MakeSharedOnHeap(RDFInternal::UpcastNode(fProxiedPtr));
-      using BaseNodeType_t = typename std::remove_pointer_t<decltype(upcastNodeOnHeap)>::element_type;
-      RInterface<BaseNodeType_t> upcastInterface(*upcastNodeOnHeap, *fLoopManager, fDefines, fDataSource);
+      // retrieve type of action as a string
+      auto actionTypeClass = TClass::GetClass(typeid(ActionTag));
+      if (!actionTypeClass) {
+          std::string exceptionText = "An error occurred while inferring the action type of the operation.";
+          throw std::runtime_error(exceptionText.c_str());
+      }
+      const std::string actionTypeName = actionTypeClass->GetName();
+      const std::string actionTypeNameBase = actionTypeName.substr(actionTypeName.rfind(':') + 1);
 
-      const auto jittedAction = std::make_shared<RDFInternal::RJittedAction>(*fLoopManager);
-      auto jittedActionOnHeap = RDFInternal::MakeWeakOnHeap(jittedAction);
+      auto nodePtrClass = TClass::GetClass(typeid(fProxiedPtr));
+      if (!nodePtrClass) {
+          std::string exceptionText = "An error occurred while inferring the type of the node.";
+          throw std::runtime_error(exceptionText.c_str());
+      }
+      const std::string nodePtrTypeName = nodePtrClass->GetName();
 
-      auto toJit = RDFInternal::JitBuildAction(
-         validColumnNames, upcastNodeOnHeap, typeid(std::shared_ptr<HelperArgType>), typeid(ActionTag), helperArgOnHeap,
-         tree, nSlots, fDefines, fDataSource, jittedActionOnHeap);
-      fLoopManager->Book(jittedAction.get());
-      fLoopManager->ToJitExec(toJit);
-      return MakeResultPtr(r, *fLoopManager, std::move(jittedAction));
+      const auto columnTypeNames = GetValidatedArgTypes(validColumnNames, fDefines, fLoopManager->GetTree(), fDataSource, actionTypeNameBase, /*vector2rvec=*/true);
+
+      std::ostringstream colTypeString;
+      for (unsigned int i = 0; i < columnTypeNames.size(); ++i) {
+        if (i > 0) {
+          colTypeString << ", ";
+        }
+        colTypeString << columnTypeNames[i];
+      }
+
+      const unsigned int jitcounter = RDFInternal::GetJitCounter()++;
+
+      std::ostringstream nsname;
+      nsname << "RInterfaceJitted_" << jitcounter;
+
+      std::ostringstream tojit;
+      tojit << "namespace ROOT {" << std::endl;
+      tojit << "  namespace " << nsname.str() << " {" << std::endl;
+      tojit << "    std::unique_ptr<ROOT::Internal::RDF::RActionBase> BuildActionJitted(const std::vector<std::string> &cols, const " << helperArgClassName << " &helper, const unsigned int nSlots, " << nodePtrTypeName << " &prevNode, " << actionTypeName << " actionTag, const ROOT::Internal::RDF::RBookedDefines &defines) {" << std::endl;
+      tojit << "      return ROOT::Internal::RDF::BuildAction<" << colTypeString.str() << ">(cols, helper, nSlots, prevNode, actionTag, defines);" << std::endl;
+      tojit << "    }" << std::endl;
+      tojit << "  };" << std::endl;
+      tojit << "};" << std::endl;
+
+      const bool jitstatus = gInterpreter->Declare(tojit.str().c_str());
+      if (!jitstatus) {
+        throw std::runtime_error("Jitting failed!");
+      }
+
+      std::ostringstream funcaddrexpr;;
+      funcaddrexpr << "&ROOT::" << nsname.str() << "::BuildActionJitted";
+
+      using ActionType = std::unique_ptr<ROOT::Internal::RDF::RActionBase>;
+
+      using fptype = ActionType(*)(const ColumnNames_t&, const std::shared_ptr<HelperArgType>&, const unsigned int, decltype(fProxiedPtr), ActionTag, const ROOT::Internal::RDF::RBookedDefines&);
+      fptype fp = reinterpret_cast<fptype>(gInterpreter->Calc(funcaddrexpr.str().c_str()));
+
+      auto action = fp(validColumnNames, helperArg, nSlots, fProxiedPtr, ActionTag{}, fDefines);
+
+      fLoopManager->Book(action.get());
+      fLoopManager->AddSampleCallback(action->GetSampleCallback());
+      return MakeResultPtr(r, *fLoopManager, std::move(action));
    }
 
    template <typename DefineType, typename ColumnTypes = RDFDetail::RInferredType, typename RetType = RDFDetail::RInferredType, typename F>
