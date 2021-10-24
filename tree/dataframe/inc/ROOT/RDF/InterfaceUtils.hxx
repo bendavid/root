@@ -687,6 +687,8 @@ struct IsDeque_t<std::deque<T>> : std::true_type {};
 
 void CheckForDuplicateSnapshotColumns(const ColumnNames_t &cols);
 
+std::atomic<unsigned int> &GetJitCounter();
+
 } // namespace RDF
 } // namespace Internal
 

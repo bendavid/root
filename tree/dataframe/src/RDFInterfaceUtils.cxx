@@ -342,6 +342,12 @@ namespace ROOT {
 namespace Internal {
 namespace RDF {
 
+std::atomic<unsigned int> &GetJitCounter()
+{
+  static std::atomic<unsigned int> counter = 0;
+  return counter;
+}
+
 /// Take a list of column names, return that list with entries starting by '#' filtered out.
 /// The function throws when filtering out a column this way.
 ColumnNames_t FilterArraySizeColNames(const ColumnNames_t &columnNames, const std::string &action)
