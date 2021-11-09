@@ -36,6 +36,9 @@ protected:
    THn() = default;
    THn(const char* name, const char* title, Int_t dim, const Int_t* nbins,
        const Double_t* xmin, const Double_t* xmax);
+   
+   THn(const char* name, const char* title, Int_t dim, const Int_t* nbins,
+       const std::vector<std::vector<double>> &xbins);
 
 public:
    virtual ~THn();
@@ -219,6 +222,12 @@ public:
        Int_t dim, const Int_t* nbins,
        const Double_t* xmin, const Double_t* xmax):
    THn(name, title, dim, nbins, xmin, xmax),
+   fArray(dim, nbins, true)  {}
+   
+   THnT(const char* name, const char* title,
+       Int_t dim, const Int_t* nbins,
+       const std::vector<std::vector<double>> &xbins):
+   THn(name, title, dim, nbins, xbins),
    fArray(dim, nbins, true)  {}
 
    const TNDArray& GetArray() const { return fArray; }

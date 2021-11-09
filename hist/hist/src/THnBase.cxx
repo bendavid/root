@@ -62,6 +62,21 @@ fIntegral(0), fIntegralStatus(kNoInt)
    fAxes.SetOwner();
 }
 
+THnBase::THnBase(const char* name, const char* title, Int_t dim,
+                 const Int_t* nbins, const std::vector<std::vector<double>> &xbins):
+TNamed(name, title), fNdimensions(dim), fAxes(dim), fBrowsables(dim),
+fEntries(0), fTsumw(0), fTsumw2(-1.), fTsumwx(dim), fTsumwx2(dim),
+fIntegral(0), fIntegralStatus(kNoInt)
+{
+   for (Int_t i = 0; i < fNdimensions; ++i) {;
+      TAxis* axis = new TAxis(nbins[i], xbins[i].data());
+      axis->SetName(TString::Format("axis%d", i));
+      fAxes.AddAtAndExpand(axis, i);
+   }
+   SetTitle(title);
+   fAxes.SetOwner();
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// Destruct a THnBase
 
