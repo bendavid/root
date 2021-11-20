@@ -158,7 +158,7 @@ protected:
    template <typename... MoreTypes>
    Long64_t Fill(Double_t firstval, MoreTypes... morevals)
    {
-      const std::array<double, 1 + sizeof...(morevals)> x = {{firstval, morevals...}};
+      const std::array<double, 1 + sizeof...(morevals)> x{firstval, static_cast<double>(morevals)...};
       if (x.size() == GetNdimensions()) {
          // without weight
          return Fill(x.data());
