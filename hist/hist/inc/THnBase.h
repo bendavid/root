@@ -165,6 +165,8 @@ protected:
       } else if (x.size() == (GetNdimensions() + 1)) {
          // with weight
          return Fill(x.data(), x.back());
+      } else {
+         Error("Fill", "Wrong number of arguments for number of histogram axes.");
       }
 
       return -1;
