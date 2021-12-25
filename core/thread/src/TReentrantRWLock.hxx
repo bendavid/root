@@ -87,6 +87,13 @@ struct UniqueLockRecurseCount {
    void ResetIsWriter(local_t &local) { local->fIsWriter = false; }
 
    size_t &GetLocalReadersCount(local_t &local) { return local->fReadersCount; }
+
+   template<typename MutexT>
+   bool HasLock(MutexT&) {
+      local_t local = GetLocal();
+      return local->fReadersCount || IsCurrentWriter(local);
+   }
+
 };
 
 struct RecurseCounts {
@@ -149,6 +156,12 @@ struct RecurseCounts {
 
    size_t &GetLocalReadersCount(local_t &local) { return fReadersCount[local]; }
 
+   template<typename MutexT>
+   bool HasLock(MutexT &mutex) {
+      local_t local = GetLocal();
+      std::unique_lock<MutexT> lock(mutex);
+      return fReadersCount[local] || IsCurrentWriter(local);
+   }
 
 };
 
@@ -210,6 +223,13 @@ struct RecurseCountsTBB {
    void ResetIsWriter(local_t &local) { local->fIsWriter = false; }
 
    size_t &GetLocalReadersCount(local_t &local) { return local->fReadersCount; }
+
+   template<typename MutexT>
+   bool HasLock(MutexT&) {
+      local_t local = GetLocal();
+      return local->fReadersCount || IsCurrentWriter(local);
+   }
+
 };
 
 struct RecurseCountsTBBUnique {
@@ -270,6 +290,13 @@ struct RecurseCountsTBBUnique {
    void ResetIsWriter(local_t &local) { local->fIsWriter = false; }
 
    size_t &GetLocalReadersCount(local_t &local) { return local->fReadersCount; }
+
+   template<typename MutexT>
+   bool HasLock(MutexT&) {
+      local_t local = GetLocal();
+      return local->fReadersCount || IsCurrentWriter(local);
+   }
+
 };
 #endif
 
@@ -311,6 +338,9 @@ public:
    std::unique_ptr<State> GetStateBefore();
    std::unique_ptr<StateDelta> Rewind(const State &earlierState);
    void Apply(std::unique_ptr<StateDelta> &&delta);
+
+   bool HasLock() { return fRecurseCounts.HasLock(fMutex); }
+
    };
 } // end of namespace ROOT
 

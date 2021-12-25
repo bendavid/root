@@ -33,6 +33,8 @@ public:
    std::unique_ptr<StateDelta> Rewind(const State &earlierState) override;
    void Apply(std::unique_ptr<StateDelta> &&delta) override;
 
+   bool HasLock() override { return fMutexImp.HasLock(); }
+
    ClassDefInlineOverride(TRWMutexImp,0)  // Concrete RW mutex lock class
 };
 
