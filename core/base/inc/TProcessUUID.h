@@ -23,6 +23,7 @@
 
 
 #include "TProcessID.h"
+#include <shared_mutex>
 
 class THashList;
 class TBits;
@@ -38,6 +39,7 @@ private:
 protected:
    TList       *fUUIDs;        //Global list of TUUIDs
    TBits       *fActive;       //Table of active UUIDs
+   mutable std::shared_timed_mutex fMutex; //!
 
 public:
 

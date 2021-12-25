@@ -77,6 +77,7 @@ TProcessUUID::~TProcessUUID()
 
 UInt_t TProcessUUID::AddUUID(TUUID &uuid, TObject *obj)
 {
+   std::unique_lock<std::shared_timed_mutex> lock(fMutex);
    UInt_t number;
    const char *uuids = uuid.AsString();
    TObjString *objs = (TObjString*)fUUIDs->FindObject(uuids);
@@ -109,7 +110,7 @@ UInt_t TProcessUUID::AddUUID(TUUID &uuid, TObject *obj)
 
 UInt_t TProcessUUID::AddUUID(const char *uuids)
 {
-
+   std::unique_lock<std::shared_timed_mutex> lock(fMutex);
    TObjString *objs = (TObjString*)fUUIDs->FindObject(uuids);
    if (objs) return objs->GetUniqueID();
 
@@ -127,6 +128,7 @@ UInt_t TProcessUUID::AddUUID(const char *uuids)
 
 TObjString *TProcessUUID::FindUUID(UInt_t number) const
 {
+   std::shared_lock<std::shared_timed_mutex> lock(fMutex);
    TObjLink *lnk = fUUIDs->FirstLink();
    while (lnk) {
       TObject *obj = lnk->GetObject();
@@ -141,6 +143,7 @@ TObjString *TProcessUUID::FindUUID(UInt_t number) const
 
 void TProcessUUID::RemoveUUID(UInt_t number)
 {
+   std::unique_lock<std::shared_timed_mutex> lock(fMutex);
    if (number > (UInt_t)fObjects->GetSize()) return;
    TObjLink *lnk = fUUIDs->FirstLink();
    while (lnk) {
