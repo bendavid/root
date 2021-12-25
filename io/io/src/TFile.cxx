@@ -538,11 +538,8 @@ TFile::~TFile()
    SafeDelete(fInfoCache);
    SafeDelete(fOpenPhases);
 
-   {
-      R__LOCKGUARD(gROOTMutex);
-      gROOT->GetListOfClosedObjects()->Remove(this);
-      gROOT->GetUUIDs()->RemoveUUID(GetUniqueID());
-   }
+   gROOT->GetListOfClosedObjects()->Remove(this);
+   gROOT->GetUUIDs()->RemoveUUID(GetUniqueID());
 
    if (IsOnHeap()) {
       // Delete object from CINT symbol table so it can not be used anymore.
@@ -823,11 +820,8 @@ void TFile::Init(Bool_t create)
       }
    }
 
-   {
-      R__LOCKGUARD(gROOTMutex);
-      gROOT->GetListOfFiles()->Add(this);
-      gROOT->GetUUIDs()->AddUUID(fUUID,this);
-   }
+   gROOT->GetListOfFiles()->Add(this);
+   gROOT->GetUUIDs()->AddUUID(fUUID,this);
 
    // Create StreamerInfo index
    {
@@ -866,7 +860,6 @@ void TFile::Init(Bool_t create)
 
 zombie:
    {
-      R__LOCKGUARD(gROOTMutex);
       gROOT->GetListOfClosedObjects()->Add(this);
    }
    // error in file opening occurred, make this object a zombie
@@ -972,7 +965,6 @@ void TFile::Close(Option_t *option)
    pidDeleted.Delete();
 
    if (!IsZombie()) {
-      R__LOCKGUARD(gROOTMutex);
       gROOT->GetListOfFiles()->Remove(this);
       gROOT->GetListOfBrowsers()->RecursiveRemove(this);
       gROOT->GetListOfClosedObjects()->Add(this);

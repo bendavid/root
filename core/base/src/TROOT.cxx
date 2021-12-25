@@ -2450,7 +2450,7 @@ const char *TROOT::GetGitDate()
 
 void TROOT::RecursiveRemove(TObject *obj)
 {
-   R__READ_LOCKGUARD(ROOT::gCoreMutex);
+//    R__READ_LOCKGUARD(ROOT::gCoreMutex);
 
    fCleanups->RecursiveRemove(obj);
 }
@@ -2570,7 +2570,7 @@ void TROOT::RegisterModule(const char* modulename,
 
 TObject *TROOT::Remove(TObject* obj)
 {
-   R__LOCKGUARD(gROOTMutex);
+   // underlying list lock is sufficient to protect this
    return TDirectory::Remove(obj);
 }
 

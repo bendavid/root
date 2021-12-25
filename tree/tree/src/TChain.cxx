@@ -98,7 +98,6 @@ TChain::TChain()
    gROOT->GetListOfDataSets()->Add(this);
 
    // Make sure we are informed if the TFile is deleted.
-   R__LOCKGUARD(gROOTMutex);
    gROOT->GetListOfCleanups()->Add(this);
 }
 
@@ -168,8 +167,6 @@ TChain::TChain(const char* name, const char* title)
    ResetBit(kProofUptodate);
    ResetBit(kProofLite);
 
-   R__LOCKGUARD(gROOTMutex);
-
    // Add to the global lists
    gROOT->GetListOfSpecials()->Add(this);
    gROOT->GetListOfDataSets()->Add(this);
@@ -186,7 +183,6 @@ TChain::~TChain()
    bool rootAlive = gROOT && !gROOT->TestBit(TObject::kInvalidObject);
 
    if (rootAlive) {
-      R__LOCKGUARD(gROOTMutex);
       gROOT->GetListOfCleanups()->Remove(this);
    }
 
@@ -214,7 +210,6 @@ TChain::~TChain()
 
    // Remove from the global lists
    if (rootAlive) {
-      R__LOCKGUARD(gROOTMutex);
       gROOT->GetListOfSpecials()->Remove(this);
       gROOT->GetListOfDataSets()->Remove(this);
    }
@@ -2957,16 +2952,13 @@ void TChain::SetEventList(TEventList *evlist)
 void TChain::SetName(const char* name)
 {
    {
-      // Should this be extended to include the call to TTree::SetName?
-      R__WRITE_LOCKGUARD(ROOT::gCoreMutex); // Take the lock once rather than 3 times.
       gROOT->GetListOfCleanups()->Remove(this);
       gROOT->GetListOfSpecials()->Remove(this);
       gROOT->GetListOfDataSets()->Remove(this);
    }
+   // Should locks be used to protect the call to TTree::SetName?
    TTree::SetName(name);
    {
-      // Should this be extended to include the call to TTree::SetName?
-      R__WRITE_LOCKGUARD(ROOT::gCoreMutex); // Take the lock once rather than 3 times.
       gROOT->GetListOfCleanups()->Add(this);
       gROOT->GetListOfSpecials()->Add(this);
       gROOT->GetListOfDataSets()->Add(this);
@@ -3064,7 +3056,6 @@ void TChain::Streamer(TBuffer& b)
    if (b.IsReading()) {
       // Remove using the 'old' name.
       {
-         R__LOCKGUARD(gROOTMutex);
          gROOT->GetListOfCleanups()->Remove(this);
       }
 
@@ -3088,7 +3079,6 @@ void TChain::Streamer(TBuffer& b)
       }
       // Re-add using the new name.
       {
-         R__LOCKGUARD(gROOTMutex);
          gROOT->GetListOfCleanups()->Add(this);
       }
 
