@@ -49,6 +49,15 @@ protected:
    Bool_t        OutOfBoundsError(const char *where, Int_t i) const;
    Int_t         GetAbsLast() const;
 
+   void          AddAtImpl(TObject *obj, Int_t idx);
+   void          AddAtAndExpandImpl(TObject *obj, Int_t idx);
+   void          InitImpl(Int_t s, Int_t lowerBound);
+   void          ClearImpl(Option_t *option="", local_gc_t *gc = nullptr);
+   void          DeleteImpl(Option_t *option="", local_gc_t *gc = nullptr);
+   void          ExpandImpl(Int_t newSize);   // expand or shrink an array
+   Int_t         GetAbsLastImpl() const;
+   Int_t         IndexOfImpl(const TObject *obj) const;
+
 public:
    typedef TObjArrayIter Iterator_t;
 

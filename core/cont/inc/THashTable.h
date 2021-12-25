@@ -47,10 +47,10 @@ private:
    Int_t       GetHashValue(TString &s) const { return s.Hash() % fSize; }
    Int_t       GetHashValue(const char *str) const { return ::Hash(str) % fSize; }
 
-   void        AddImpl(Int_t slot, TObject *object);
-
    THashTable(const THashTable&) = delete;
    THashTable& operator=(const THashTable&) = delete;
+
+   void          RehashIfNeeded(Int_t newCapacity, Bool_t checkObjValidity = kTRUE);
 
 public:
    THashTable(Int_t capacity = TCollection::kInitHashTableCapacity, Int_t rehash = 0);
@@ -78,6 +78,17 @@ public:
    TObject      *Remove(TObject *obj);
    TObject      *RemoveSlow(TObject *obj);
    void          SetRehashLevel(Int_t rehash) { fRehashLevel = rehash; }
+
+   // FIXME make THashList a friend class instead?
+   void          AddImpl(ULong_t hash, TObject *object);
+   void          AddBeforeImpl(ULong_t beforehash, ULong_t hash, const TObject *before, TObject *obj);
+   void          ClearImpl(Option_t *option="", local_gc_t *gc = nullptr);
+   void          DeleteImpl(Option_t *option="", local_gc_t *gc = nullptr);
+   void          RehashImpl(Int_t newCapacity, Bool_t checkObjValidity = kTRUE);
+   const TList  *GetListForHashImpl(ULong_t hash) const { return fCont[hash % fSize]; }
+   TObject      *FindObjectImpl(ULong_t hash, const char *name) const;
+   TObject      *FindObjectImpl(ULong_t hash, const TObject *obj) const;
+   TObject      *RemoveImpl(ULong_t hash, TObject *obj);
 
    ClassDef(THashTable,0)  //A hash table
 };

@@ -33,6 +33,11 @@
 #include "ROOT/RRangeCast.hxx"
 
 #include <cassert>
+#include <mutex>
+#include <shared_mutex>
+#include <iostream>
+#include <signal.h>
+
 
 class TClass;
 class TObjectTable;
@@ -155,6 +160,92 @@ protected:
    virtual const char* GetCollectionEntryName(TObject* entry) const;
    virtual void        PrintCollectionEntry(TObject* entry, Option_t* option, Int_t recurse) const;
 
+   mutable std::shared_timed_mutex fMutex; //!
+
+   void CheckGlobalLock() const {
+      if (IsUsingRWLock() && ROOT::gCoreMutex && ROOT::gCoreMutex->HasLock()) {
+
+         raise(SIGABRT);
+         throw std::runtime_error("Can't call this function from a thread currently holding the global lock, since this could create deadlocks.");
+//          Error("TCollection::CheckGlobalLock", "Can't call this function from a thread currently holding the global lock, since this could create deadlocks.");
+      }
+   }
+
+
+   std::shared_lock<std::shared_timed_mutex> ReadLockGuard() const {
+      if (IsUsingRWLock()) {
+         return std::shared_lock<std::shared_timed_mutex>(fMutex);
+      }
+
+      return std::shared_lock<std::shared_timed_mutex>();
+   }
+
+   std::unique_lock<std::shared_timed_mutex> WriteLockGuard() const {
+      if (IsUsingRWLock()) {
+         return std::unique_lock<std::shared_timed_mutex>(fMutex);
+      }
+
+      return std::unique_lock<std::shared_timed_mutex>();
+   }
+
+
+//    class SharedLock : public std::shared_lock<std::shared_timed_mutex> {
+//    public:
+//       SharedLock() {}
+//       SharedLock(std::shared_timed_mutex &mutex) : std::shared_lock<std::shared_timed_mutex>(mutex) {
+//          std::cout << "shared locking mutex " << &mutex << std::endl;
+//       }
+//
+//       ~SharedLock() {
+//          if (owns_lock())
+//             std::cout << "releasing shared lock mutex " << mutex() << std::endl;
+//       }
+//    };
+//
+//    class UniqueLock : public std::unique_lock<std::shared_timed_mutex> {
+//    public:
+//       UniqueLock() {}
+//       UniqueLock(std::shared_timed_mutex &mutex) : std::unique_lock<std::shared_timed_mutex>(mutex) {
+//          std::cout << "unique locking mutex " << &mutex << std::endl;
+//       }
+//
+//       ~UniqueLock() {
+//          if (owns_lock())
+//             std::cout << "releasing unique lock mutex " << mutex() << std::endl;
+//       }
+//    };
+//
+//    SharedLock ReadLockGuard() const {
+//       if (IsUsingRWLock()) {
+//          return SharedLock(fMutex);
+//       }
+//
+//       return SharedLock();
+//    }
+//
+//    UniqueLock WriteLockGuard() const {
+//       if (IsUsingRWLock()) {
+// //          std::cout << "taking write lock for " << this << std::endl;
+//          return UniqueLock(fMutex);
+//       }
+//
+//       return UniqueLock();
+//    }
+
+
+
+   using local_gc_t = std::vector<std::unique_ptr<TObject>>;
+
+
+//    class RRHelper {
+//    public:
+//       RRHelper(TObject *obj) : fObj(obj) {}
+//       ~RRH
+//    private:
+//       TObject *fObj;
+//       std::vector<
+//    };
+
 public:
    enum { kInitCapacity = 16, kInitHashTableCapacity = 17 };
 
@@ -213,7 +304,7 @@ public:
 
    static TCollection  *GetCurrentCollection();
    static void          StartGarbageCollection();
-   static void          GarbageCollect(TObject *obj);
+   void          GarbageCollect(TObject *obj, local_gc_t *gc = nullptr);
    static void          EmptyGarbageCollection();
 
    TIter begin() const;
@@ -357,24 +448,56 @@ using TRangeStaticCast = TRangeCast<T, false>;
 template <typename T>
 using TRangeDynCast = ROOT::Detail::TRangeCast<T, true>;
 
+// // Zero overhead macros in case not compiled with thread support
+// #if defined (_REENTRANT) || defined (WIN32)
+//
+// #define R__COLL_COND_MUTEX(mutex) this->IsUsingRWLock() ? mutex : nullptr
+//
+// #define R__COLLECTION_READ_LOCKGUARD(mutex) ::ROOT::TReadLockGuard _R__UNIQUE_(R__readguard)(R__COLL_COND_MUTEX(mutex))
+// #define R__COLLECTION_READ_LOCKGUARD_NAMED(name,mutex) ::ROOT::TReadLockGuard _NAME2_(R__readguard,name)(R__COLL_COND_MUTEX(mutex))
+//
+// #define R__COLLECTION_WRITE_LOCKGUARD(mutex) ::ROOT::TWriteLockGuard _R__UNIQUE_(R__readguard)(R__COLL_COND_MUTEX(mutex))
+// #define R__COLLECTION_WRITE_LOCKGUARD_NAMED(name,mutex) ::ROOT::TWriteLockGuard _NAME2_(R__readguard,name)(R__COLL_COND_MUTEX(mutex))
+//
+// #else
+//
+// #define R__COLLECTION_READ_LOCKGUARD(mutex) (void)mutex
+// #define R__COLLECTION_COLLECTION_READ_LOCKGUARD_NAMED(name,mutex) (void)mutex
+//
+// #define R__COLLECTION_WRITE_LOCKGUARD(mutex) (void)mutex
+// #define R__COLLECTION_WRITE_LOCKGUARD_NAMED(name,mutex) (void)mutex
+//
+// #endif
+
 // Zero overhead macros in case not compiled with thread support
 #if defined (_REENTRANT) || defined (WIN32)
 
+#define R__COLLECTION_READ_LOCKGUARD() std::shared_lock<std::shared_timed_mutex> _R__UNIQUE_(R__readguard)(ReadLockGuard())
+//
+#define R__COLLECTION_WRITE_LOCKGUARD() std::unique_lock<std::shared_timed_mutex> _R__UNIQUE_(R__readguard)(WriteLockGuard())
+
 #define R__COLL_COND_MUTEX(mutex) this->IsUsingRWLock() ? mutex : nullptr
+//
+#define R__COLLECTION_READ_LOCKGUARD_GLOBAL(mutex) ::ROOT::TReadLockGuard _R__UNIQUE_(R__readguard)(R__COLL_COND_MUTEX(mutex))
 
-#define R__COLLECTION_READ_LOCKGUARD(mutex) ::ROOT::TReadLockGuard _R__UNIQUE_(R__readguard)(R__COLL_COND_MUTEX(mutex))
-#define R__COLLECTION_READ_LOCKGUARD_NAMED(name,mutex) ::ROOT::TReadLockGuard _NAME2_(R__readguard,name)(R__COLL_COND_MUTEX(mutex))
+#define R__COLLECTION_WRITE_LOCKGUARD_GLOBAL(mutex) ::ROOT::TWriteLockGuard _R__UNIQUE_(R__readguard)(R__COLL_COND_MUTEX(mutex))
 
-#define R__COLLECTION_WRITE_LOCKGUARD(mutex) ::ROOT::TWriteLockGuard _R__UNIQUE_(R__readguard)(R__COLL_COND_MUTEX(mutex))
-#define R__COLLECTION_WRITE_LOCKGUARD_NAMED(name,mutex) ::ROOT::TWriteLockGuard _NAME2_(R__readguard,name)(R__COLL_COND_MUTEX(mutex))
+// #define R__COLLECTION_READ_LOCKGUARD() SharedLock _R__UNIQUE_(R__readguard)(ReadLockGuard())
+
+// #define R__COLLECTION_WRITE_LOCKGUARD() UniqueLock _R__UNIQUE_(R__readguard)(WriteLockGuard())
+
+#define R__COLLECTION_CHECK_GLOBAL_LOCK() CheckGlobalLock()
 
 #else
 
-#define R__COLLECTION_READ_LOCKGUARD(mutex) (void)mutex
-#define R__COLLECTION_COLLECTION_READ_LOCKGUARD_NAMED(name,mutex) (void)mutex
+#define R__COLLECTION_READ_LOCKGUARD() (void)0
 
-#define R__COLLECTION_WRITE_LOCKGUARD(mutex) (void)mutex
-#define R__COLLECTION_WRITE_LOCKGUARD_NAMED(name,mutex) (void)mutex
+#define R__COLLECTION_WRITE_LOCKGUARD() (void)0
+
+#define R__COLLECTION_READ_LOCKGUARD_GLOBAL(mutex) (void)mutex
+#define R__COLLECTION_WRITE_LOCKGUARD_GLOBAL(mutex) (void)mutex
+
+#define R__COLLECTION_CHECK_GLOBAL_LOCK() (void)0
 
 #endif
 

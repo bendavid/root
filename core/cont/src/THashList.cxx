@@ -68,10 +68,24 @@ THashList::~THashList()
 
 void THashList::AddFirst(TObject *obj)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   // follow similar pattern as THashList to avoid calling Hash functions
+   // while holding the lock
 
-   TList::AddFirst(obj);
-   fTable->Add(obj);
+   if (IsArgNull("AddFirst", obj)) return;
+
+   ULong_t hash = obj->CheckedHash();
+
+   bool rehash = false;
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+
+      TList::AddFirstImpl(obj);
+      fTable->AddImpl(hash, obj);
+   }
+
+   if (rehash) {
+      RehashIfNeeded(fTable->GetSize());
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -83,10 +97,21 @@ void THashList::AddFirst(TObject *obj)
 
 void THashList::AddFirst(TObject *obj, Option_t *opt)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   if (IsArgNull("AddFirst", obj)) return;
 
-   TList::AddFirst(obj, opt);
-   fTable->Add(obj);
+   ULong_t hash = obj->CheckedHash();
+
+   bool rehash = false;
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+
+      TList::AddFirstImpl(obj, opt);
+      fTable->AddImpl(hash, obj);
+   }
+
+   if (rehash) {
+      RehashIfNeeded(fTable->GetSize());
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -94,10 +119,21 @@ void THashList::AddFirst(TObject *obj, Option_t *opt)
 
 void THashList::AddLast(TObject *obj)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   if (IsArgNull("AddLast", obj)) return;
 
-   TList::AddLast(obj);
-   fTable->Add(obj);
+   ULong_t hash = obj->CheckedHash();
+
+   bool rehash = false;
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+
+      TList::AddLastImpl(obj);
+      fTable->AddImpl(hash, obj);
+   }
+
+   if (rehash) {
+      RehashIfNeeded(fTable->GetSize());
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -109,10 +145,21 @@ void THashList::AddLast(TObject *obj)
 
 void THashList::AddLast(TObject *obj, Option_t *opt)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   if (IsArgNull("AddLast", obj)) return;
 
-   TList::AddLast(obj, opt);
-   fTable->Add(obj);
+   ULong_t hash = obj->CheckedHash();
+
+   bool rehash = false;
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+
+      TList::AddLastImpl(obj, opt);
+      fTable->AddImpl(hash, obj);
+   }
+
+   if (rehash) {
+      RehashIfNeeded(fTable->GetSize());
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -120,10 +167,22 @@ void THashList::AddLast(TObject *obj, Option_t *opt)
 
 void THashList::AddBefore(const TObject *before, TObject *obj)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   if (IsArgNull("AddBefore", before) || IsArgNull("AddBefore", obj)) return;
 
-   TList::AddBefore(before, obj);
-   fTable->AddBefore(before, obj);
+   ULong_t beforehash = before->Hash();
+   ULong_t hash = obj->CheckedHash();
+
+   bool rehash = false;
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+
+      TList::AddBeforeImpl(before, obj);
+      fTable->AddBeforeImpl(beforehash, hash, before, obj);
+   }
+
+   if (rehash) {
+      RehashIfNeeded(fTable->GetSize());
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -131,10 +190,23 @@ void THashList::AddBefore(const TObject *before, TObject *obj)
 
 void THashList::AddBefore(TObjLink *before, TObject *obj)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   if (!before) return;
+   if (IsArgNull("AddBefore", before->GetObject()) || IsArgNull("AddBefore", obj)) return;
 
-   TList::AddBefore(before, obj);
-   fTable->AddBefore(before->GetObject(), obj);
+   ULong_t beforehash = before->GetObject()->Hash();
+   ULong_t hash = obj->CheckedHash();
+
+   bool rehash = false;
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+
+      TList::AddBeforeImpl(before, obj);
+      fTable->AddBeforeImpl(beforehash, hash, before->GetObject(), obj);
+   }
+
+   if (rehash) {
+      RehashIfNeeded(fTable->GetSize());
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -142,10 +214,21 @@ void THashList::AddBefore(TObjLink *before, TObject *obj)
 
 void THashList::AddAfter(const TObject *after, TObject *obj)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   if (IsArgNull("AddAfter", after) || IsArgNull("AddAfter", obj)) return;
 
-   TList::AddAfter(after, obj);
-   fTable->Add(obj);
+   ULong_t hash = obj->CheckedHash();
+
+   bool rehash = false;
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+
+      TList::AddAfterImpl(after, obj);
+      fTable->AddImpl(hash, obj);
+   }
+
+   if (rehash) {
+      RehashIfNeeded(fTable->GetSize());
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -153,10 +236,22 @@ void THashList::AddAfter(const TObject *after, TObject *obj)
 
 void THashList::AddAfter(TObjLink *after, TObject *obj)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   if (!after) return;
+   if (IsArgNull("AddAfter", after->GetObject()) || IsArgNull("AddAfter", obj)) return;
 
-   TList::AddAfter(after, obj);
-   fTable->Add(obj);
+   ULong_t hash = obj->CheckedHash();
+
+   bool rehash = false;
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+
+      TList::AddAfterImpl(after, obj);
+      fTable->AddImpl(hash, obj);
+   }
+
+   if (rehash) {
+      RehashIfNeeded(fTable->GetSize());
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -164,10 +259,21 @@ void THashList::AddAfter(TObjLink *after, TObject *obj)
 
 void THashList::AddAt(TObject *obj, Int_t idx)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   if (IsArgNull("AddFirst", obj)) return;
 
-   TList::AddAt(obj, idx);
-   fTable->Add(obj);
+   ULong_t hash = obj->CheckedHash();
+
+   bool rehash = false;
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+
+      TList::AddAtImpl(obj, idx);
+      fTable->AddImpl(hash, obj);
+   }
+
+   if (rehash) {
+      RehashIfNeeded(fTable->GetSize());
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -177,7 +283,7 @@ void THashList::AddAt(TObject *obj, Int_t idx)
 
 Float_t THashList::AverageCollisions() const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
    return fTable->AverageCollisions();
 }
@@ -186,15 +292,29 @@ Float_t THashList::AverageCollisions() const
 /// Remove all objects from the list. Does not delete the objects unless
 /// the THashList is the owner (set via SetOwner()).
 
+void THashList::ClearImpl(Option_t *option, local_gc_t *gc)
+{
+   fTable->ClearImpl("nodelete", gc);  // clear table so not more lookups
+   if (IsOwner())
+      TList::DeleteImpl(option, gc);
+   else
+      TList::ClearImpl(option, gc);
+}
+
 void THashList::Clear(Option_t *option)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   local_gc_t gc;
+   local_gc_t *gcp = nullptr;
+   if (IsUsingRWLock()) {
+      gc.reserve(GetEntries());
+      gcp = &gc;
+   }
 
-   fTable->Clear("nodelete");  // clear table so not more lookups
-   if (IsOwner())
-      TList::Delete(option);
-   else
-      TList::Clear(option);
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+      R__COLLECTION_WRITE_GUARD();
+      ClearImpl(option, gcp);
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -204,15 +324,13 @@ void THashList::Clear(Option_t *option)
 /// of an object in this list one can still access the list to search for
 /// other not yet deleted objects).
 
-void THashList::Delete(Option_t *option)
+void THashList::DeleteImpl(Option_t *option, local_gc_t *gc)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-
    Bool_t slow = option ? (!strcmp(option, "slow") ? kTRUE : kFALSE) : kFALSE;
 
    if (!slow) {
-      fTable->Clear("nodelete");     // clear table so no more lookups
-      TList::Delete(option);         // this deletes the objects
+      fTable->ClearImpl("nodelete", gc);     // clear table so no more lookups
+      TList::DeleteImpl(option, gc);         // this deletes the objects
    } else {
       TList removeDirectory; // need to deregister these from their directory
 
@@ -231,7 +349,7 @@ void THashList::Delete(Option_t *option)
             Error("Delete", "A list is accessing an object (%p) already deleted (list name = %s)",
                   obj, GetName());
          else if (obj && obj->IsOnHeap())
-            TCollection::GarbageCollect(obj);
+            TCollection::GarbageCollect(obj, gc);
          else if (obj && obj->IsA()->GetDirectoryAutoAdd())
             removeDirectory.Add(obj);
 
@@ -255,15 +373,33 @@ void THashList::Delete(Option_t *option)
    }
 }
 
+void THashList::Delete(Option_t *option)
+{
+   local_gc_t gc;
+   local_gc_t *gcp = nullptr;
+   if (IsUsingRWLock()) {
+      gc.reserve(GetEntries());
+      gcp = &gc;
+   }
+
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+      R__COLLECTION_WRITE_GUARD();
+      DeleteImpl(option, gcp);
+   }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// Find object using its name. Uses the hash value returned by the
 /// TString::Hash() after converting name to a TString.
 
 TObject *THashList::FindObject(const char *name) const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   const ULong_t hash = ::Hash(name);
 
-   return fTable->FindObject(name);
+   R__COLLECTION_READ_LOCKGUARD();
+
+   return fTable->FindObjectImpl(hash, name);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -271,9 +407,11 @@ TObject *THashList::FindObject(const char *name) const
 
 TObject *THashList::FindObject(const TObject *obj) const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   const ULong_t hash = obj->Hash();
 
-   return fTable->FindObject(obj);
+   R__COLLECTION_READ_LOCKGUARD();
+
+   return fTable->FindObjectImpl(hash, obj);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -282,9 +420,11 @@ TObject *THashList::FindObject(const TObject *obj) const
 
 const TList *THashList::GetListForObject(const char *name) const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   const ULong_t hash = ::Hash(name);
 
-   return fTable->GetListForObject(name);
+   R__COLLECTION_READ_LOCKGUARD();
+
+   return fTable->GetListForHashImpl(hash);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -293,9 +433,11 @@ const TList *THashList::GetListForObject(const char *name) const
 
 const TList *THashList::GetListForObject(const TObject *obj) const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   const ULong_t hash = obj->Hash();
 
-   return fTable->GetListForObject(obj);
+   R__COLLECTION_READ_LOCKGUARD();
+
+   return fTable->GetListForHashImpl(hash);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -309,33 +451,36 @@ const TList *THashList::GetListForObject(const TObject *obj) const
 
 void THashList::RecursiveRemove(TObject *obj)
 {
+//    R__COLLECTION_CHECK_GLOBAL_LOCK();
    if (!obj) return;
 
    // It might not be safe to rely on TROOT::RecursiveRemove to take the readlock in case user code
    // is calling directly gROOT->GetListOfCleanups()->RecursiveRemove(...)
    // However this can become a significant bottleneck if there are a very large number of
    // TDirectory object.
-   // R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
 
    if (obj->HasInconsistentHash()) {
-      R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+      R__COLLECTION_WRITE_LOCKGUARD();
 
       // Remove obj in the list itself
-      TObject *object = TList::Remove(obj);
+      TObject *object = TList::RemoveImpl(obj);
       if (object)
          fTable->RemoveSlow(object);
 
-   } else if (fTable->FindObject(obj)) {
-      R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-
-      // Remove obj in the list itself
-      TObject *object = TList::Remove(obj);
-      if (object)
-         fTable->Remove(object);
+   } else {
+      // this function handles the locking itself
+      Remove(obj);
    }
 
-   if (!fFirst.get())
+   // TODO check here that the global lock is not held since this could lead to deadlocks
+
+   R__COLLECTION_READ_LOCKGUARD_GLOBAL(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
+
+   // if the collection is empty now nothing else to do
+   if (!fFirst.get()) {
       return;
+   }
 
    // Scan again the list and invoke RecursiveRemove for all objects
    // We need to make sure to go through all the node even those
@@ -367,9 +512,20 @@ void THashList::RecursiveRemove(TObject *obj)
 
 void THashList::Rehash(Int_t newCapacity)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD_GLOBAL(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
-   fTable->Rehash(newCapacity);
+   fTable->RehashImpl(newCapacity);
+}
+
+void THashList::RehashIfNeeded(Int_t newCapacity)
+{
+   R__COLLECTION_READ_LOCKGUARD_GLOBAL(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
+
+   if (fTable->GetRehashLevel() && fTable->AverageCollisions() > fTable->GetRehashLevel()) {
+      fTable->RehashImpl(newCapacity);
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -377,12 +533,20 @@ void THashList::Rehash(Int_t newCapacity)
 
 TObject *THashList::Remove(TObject *obj)
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
-   if (!obj || !fTable->FindObject(obj)) return 0;
+   if (!obj) return 0;
 
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-   TList::Remove(obj);
-   return fTable->Remove(obj);
+   const ULong_t hash = obj->Hash();
+
+   {
+      // check first if object is present to avoid taking the write lock
+      // unnecessarily
+      R__COLLECTION_READ_LOCKGUARD();
+      if (!fTable->FindObjectImpl(hash, obj)) return 0;
+   }
+
+   R__COLLECTION_WRITE_LOCKGUARD();
+   TList::RemoveImpl(obj);
+   return fTable->RemoveImpl(hash, obj);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -392,22 +556,14 @@ TObject *THashList::Remove(TObjLink *lnk)
 {
    if (!lnk) return 0;
 
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
    TObject *obj = lnk->GetObject();
 
-   TList::Remove(lnk);
-   return fTable->Remove(obj);
-}
+   const ULong_t hash = obj->Hash();
 
-////////////////////////////////////////////////////////////////////////////////
-/// Set this collection to use a RW lock upon access, making it thread safe.
-/// Return the previous state.
-///
-/// Note: To test whether the usage is enabled do:
-///    collection->TestBit(TCollection::kUseRWLock);
+   // don't bother checking if object is in the collection since we already
+   // have the link from the list
 
-bool THashList::UseRWLock()
-{
-   fTable->UseRWLock();
-   return TCollection::UseRWLock();
+   R__COLLECTION_WRITE_LOCKGUARD();
+   TList::RemoveImpl(lnk);
+   return fTable->RemoveImpl(hash, obj);
 }

@@ -40,6 +40,11 @@ private:
    THashList(const THashList&) = delete;
    THashList& operator=(const THashList&) = delete;
 
+   void      ClearImpl(Option_t *option="", local_gc_t *gc = nullptr);
+   void      DeleteImpl(Option_t *option="", local_gc_t *gc = nullptr);
+
+   void      RehashIfNeeded(Int_t newCapacity);
+
 public:
    THashList(Int_t capacity=TCollection::kInitHashTableCapacity, Int_t rehash=0);
    THashList(TObject *parent, Int_t capacity=TCollection::kInitHashTableCapacity, Int_t rehash=0);
@@ -67,7 +72,6 @@ public:
    void       Rehash(Int_t newCapacity);
    TObject   *Remove(TObject *obj);
    TObject   *Remove(TObjLink *lnk);
-   bool       UseRWLock();
 
    ClassDef(THashList,0)  //Doubly linked list with hashtable for lookup
 };

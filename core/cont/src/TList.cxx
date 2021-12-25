@@ -97,14 +97,8 @@ TList::~TList()
 ////////////////////////////////////////////////////////////////////////////////
 /// Add object at the beginning of the list.
 
-void TList::AddFirst(TObject *obj)
+void TList::AddFirstImpl(TObject *obj)
 {
-   R__COLLECTION_WRITE_GUARD();
-
-   if (IsArgNull("AddFirst", obj)) return;
-
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-
    if (!fFirst) {
       fFirst = NewLink(obj);
       fLast = fFirst;
@@ -118,6 +112,21 @@ void TList::AddFirst(TObject *obj)
    Changed();
 }
 
+
+////////////////////////////////////////////////////////////////////////////////
+/// Add object at the beginning of the list.
+
+void TList::AddFirst(TObject *obj)
+{
+   R__COLLECTION_WRITE_GUARD();
+
+   if (IsArgNull("AddFirst", obj)) return;
+
+   R__COLLECTION_WRITE_LOCKGUARD();
+
+   AddFirstImpl(obj);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// Add object at the beginning of the list and also store option.
 /// Storing an option is useful when one wants to change the behaviour
@@ -125,14 +134,8 @@ void TList::AddFirst(TObject *obj)
 /// copy of the object. This feature is used, for example, by the Draw()
 /// method. It allows the same object to be drawn in different ways.
 
-void TList::AddFirst(TObject *obj, Option_t *opt)
+void TList::AddFirstImpl(TObject *obj, Option_t *opt)
 {
-   R__COLLECTION_WRITE_GUARD();
-
-   if (IsArgNull("AddFirst", obj)) return;
-
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-
    if (!fFirst) {
       fFirst = NewOptLink(obj, opt);
       fLast = fFirst;
@@ -146,17 +149,23 @@ void TList::AddFirst(TObject *obj, Option_t *opt)
    Changed();
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// Add object at the end of the list.
 
-void TList::AddLast(TObject *obj)
+void TList::AddFirst(TObject *obj, Option_t *opt)
 {
    R__COLLECTION_WRITE_GUARD();
 
-   if (IsArgNull("AddLast", obj)) return;
+   if (IsArgNull("AddFirst", obj)) return;
 
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
+   AddFirstImpl(obj, opt);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// Add object at the end of the list.
+
+void TList::AddLastImpl(TObject *obj)
+{
    if (!fFirst) {
       fFirst = NewLink(obj);
       fLast  = fFirst;
@@ -167,20 +176,28 @@ void TList::AddLast(TObject *obj)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+/// Add object at the end of the list.
+
+void TList::AddLast(TObject *obj)
+{
+   R__COLLECTION_WRITE_GUARD();
+
+   if (IsArgNull("AddLast", obj)) return;
+
+   R__COLLECTION_WRITE_LOCKGUARD();
+
+   AddLastImpl(obj);
+}
+
+////////////////////////////////////////////////////////////////////////////////
 /// Add object at the end of the list and also store option.
 /// Storing an option is useful when one wants to change the behaviour
 /// of an object a little without having to create a complete new
 /// copy of the object. This feature is used, for example, by the Draw()
 /// method. It allows the same object to be drawn in different ways.
 
-void TList::AddLast(TObject *obj, Option_t *opt)
+void TList::AddLastImpl(TObject *obj, Option_t *opt)
 {
-   R__COLLECTION_WRITE_GUARD();
-
-   if (IsArgNull("AddLast", obj)) return;
-
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-
    if (!fFirst) {
       fFirst = NewOptLink(obj, opt);
       fLast  = fFirst;
@@ -190,17 +207,23 @@ void TList::AddLast(TObject *obj, Option_t *opt)
    Changed();
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// Insert object before object before in the list.
 
-void TList::AddBefore(const TObject *before, TObject *obj)
+void TList::AddLast(TObject *obj, Option_t *opt)
 {
    R__COLLECTION_WRITE_GUARD();
 
-   if (IsArgNull("AddBefore", obj)) return;
+   if (IsArgNull("AddLast", obj)) return;
 
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
+   AddLastImpl(obj, opt);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// Insert object before object before in the list.
+
+void TList::AddBeforeImpl(const TObject *before, TObject *obj)
+{
    if (!before)
       TList::AddFirst(obj);
    else {
@@ -211,7 +234,7 @@ void TList::AddBefore(const TObject *before, TObject *obj)
          return;
       }
       if (t == fFirst.get())
-         TList::AddFirst(obj);
+         TList::AddFirstImpl(obj);
       else {
          NewLink(obj, t->fPrev.lock());
          fSize++;
@@ -220,22 +243,29 @@ void TList::AddBefore(const TObject *before, TObject *obj)
    }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// Insert object before the specified ObjLink object. If before = 0 then add
-/// to the head of the list. An ObjLink can be obtained by looping over a list
-/// using the above describe iterator method 3.
-
-void TList::AddBefore(TObjLink *before, TObject *obj)
+void TList::AddBefore(const TObject *before, TObject *obj)
 {
    R__COLLECTION_WRITE_GUARD();
 
    if (IsArgNull("AddBefore", obj)) return;
 
+   R__COLLECTION_WRITE_LOCKGUARD();
+
+   AddBeforeImpl(before, obj);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// Insert object before the specified ObjLink object. If before = 0 then add
+/// to the head of the list. An ObjLink can be obtained by looping over a list
+/// using the above describe iterator method 3.
+
+void TList::AddBeforeImpl(TObjLink *before, TObject *obj)
+{
    if (!before)
-      TList::AddFirst(obj);
+      TList::AddFirstImpl(obj);
    else {
       if (before == fFirst.get())
-         TList::AddFirst(obj);
+         TList::AddFirstImpl(obj);
       else {
          NewLink(obj, before->fPrev.lock());
          fSize++;
@@ -244,17 +274,22 @@ void TList::AddBefore(TObjLink *before, TObject *obj)
    }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// Insert object after object after in the list.
-
-void TList::AddAfter(const TObject *after, TObject *obj)
+void TList::AddBefore(TObjLink *before, TObject *obj)
 {
    R__COLLECTION_WRITE_GUARD();
 
-   if (IsArgNull("AddAfter", obj)) return;
+   if (IsArgNull("AddBefore", obj)) return;
 
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
+   AddBeforeImpl(before, obj);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// Insert object after object after in the list.
+
+void TList::AddAfterImpl(const TObject *after, TObject *obj)
+{
    if (!after)
       TList::AddLast(obj);
    else {
@@ -265,7 +300,7 @@ void TList::AddAfter(const TObject *after, TObject *obj)
          return;
       }
       if (t == fLast.get())
-         TList::AddLast(obj);
+         TList::AddLastImpl(obj);
       else {
          NewLink(obj, t->shared_from_this());
          fSize++;
@@ -274,24 +309,29 @@ void TList::AddAfter(const TObject *after, TObject *obj)
    }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// Insert object after the specified ObjLink object. If after = 0 then add
-/// to the tail of the list. An ObjLink can be obtained by looping over a list
-/// using the above describe iterator method 3.
-
-void TList::AddAfter(TObjLink *after, TObject *obj)
+void TList::AddAfter(const TObject *after, TObject *obj)
 {
    R__COLLECTION_WRITE_GUARD();
 
    if (IsArgNull("AddAfter", obj)) return;
 
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
+   AddAfterImpl(after, obj);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// Insert object after the specified ObjLink object. If after = 0 then add
+/// to the tail of the list. An ObjLink can be obtained by looping over a list
+/// using the above describe iterator method 3.
+
+void TList::AddAfterImpl(TObjLink *after, TObject *obj)
+{
    if (!after)
       TList::AddLast(obj);
    else {
       if (after == fLast.get())
-         TList::AddLast(obj);
+         TList::AddLastImpl(obj);
       else {
          NewLink(obj, after->shared_from_this());
          fSize++;
@@ -300,8 +340,34 @@ void TList::AddAfter(TObjLink *after, TObject *obj)
    }
 }
 
+void TList::AddAfter(TObjLink *after, TObject *obj)
+{
+   R__COLLECTION_WRITE_GUARD();
+
+   if (IsArgNull("AddAfter", obj)) return;
+
+   R__COLLECTION_WRITE_LOCKGUARD();
+
+   AddAfterImpl(after, obj);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// Insert object at position idx in the list.
+
+void TList::AddAtImpl(TObject *obj, Int_t idx)
+{;
+
+   TObjLink *lnk = LinkAt(idx);
+   if (!lnk)
+      TList::AddLastImpl(obj);
+   else if (lnk == fFirst.get())
+      TList::AddFirstImpl(obj);
+   else {
+      NewLink(obj, lnk->fPrev.lock());
+      fSize++;
+      Changed();
+   }
+}
 
 void TList::AddAt(TObject *obj, Int_t idx)
 {
@@ -309,18 +375,9 @@ void TList::AddAt(TObject *obj, Int_t idx)
 
    if (IsArgNull("AddAt", obj)) return;
 
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
-   TObjLink *lnk = LinkAt(idx);
-   if (!lnk)
-      TList::AddLast(obj);
-   else if (lnk == fFirst.get())
-      TList::AddFirst(obj);
-   else {
-      NewLink(obj, lnk->fPrev.lock());
-      fSize++;
-      Changed();
-   }
+   AddAtImpl(obj, idx);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -333,7 +390,7 @@ TObject *TList::After(const TObject *obj) const
 
    TObjLink *t;
 
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
    auto cached = fCache.lock();
    if (cached.get() && cached->GetObject() && cached->GetObject()->IsEqual(obj)) {
@@ -356,7 +413,7 @@ TObject *TList::After(const TObject *obj) const
 
 TObject *TList::At(Int_t idx) const
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
    R__COLLECTION_WRITE_GUARD();
 
    TObjLink *lnk = LinkAt(idx);
@@ -370,7 +427,7 @@ TObject *TList::At(Int_t idx) const
 
 TObject *TList::Before(const TObject *obj) const
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
    R__COLLECTION_WRITE_GUARD();
 
    TObjLink *t;
@@ -399,15 +456,12 @@ TObject *TList::Before(const TObject *obj) const
 /// marked with the kCanDelete bit, otherwise these objects will be
 /// deleted (this option is used by THashTable::Clear()).
 
-void TList::Clear(Option_t *option)
+void TList::ClearImpl(Option_t *option, local_gc_t *gc)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-   R__COLLECTION_WRITE_GUARD();
-
    Bool_t nodel = option ? (!strcmp(option, "nodelete") ? kTRUE : kFALSE) : kFALSE;
 
    if (!nodel && IsOwner()) {
-      Delete(option);
+      DeleteImpl(option, gc);
       return;
    }
 
@@ -446,7 +500,7 @@ void TList::Clear(Option_t *option)
          } else if (obj->IsOnHeap()) {
             if (obj->TestBit(kCanDelete)) {
                if (obj->TestBit(kNotDeleted)) {
-                  TCollection::GarbageCollect(obj);
+                  TCollection::GarbageCollect(obj, gc);
                }
             }
          }
@@ -460,6 +514,22 @@ void TList::Clear(Option_t *option)
    Changed();
 }
 
+void TList::Clear(Option_t *option)
+{
+   local_gc_t gc;
+   local_gc_t *gcp = nullptr;
+   if (IsUsingRWLock()) {
+      gc.reserve(GetEntries());
+      gcp = &gc;
+   }
+
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+      R__COLLECTION_WRITE_GUARD();
+      ClearImpl(option, gcp);
+   }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// Remove all objects from the list AND delete all heap based objects.
 /// If option="slow" then keep list consistent during delete. This allows
@@ -467,11 +537,8 @@ void TList::Clear(Option_t *option)
 /// of an object in this list one can still access the list to search for
 /// other not yet deleted objects).
 
-void TList::Delete(Option_t *option)
+void TList::DeleteImpl(Option_t *option, local_gc_t *gc)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-   R__COLLECTION_WRITE_GUARD();
-
    Bool_t slow = option ? (!strcmp(option, "slow") ? kTRUE : kFALSE) : kFALSE;
 
    TList removeDirectory; // need to deregister these from their directory
@@ -505,7 +572,7 @@ void TList::Delete(Option_t *option)
             Error("Delete", "A list is accessing an object (%p) already deleted (list name = %s)",
                   obj, GetName());
          else if (obj && obj->IsOnHeap())
-            TCollection::GarbageCollect(obj);
+            TCollection::GarbageCollect(obj, gc);
          else if (obj && obj->IsA()->GetDirectoryAutoAdd())
             removeDirectory.Add(obj);
 
@@ -534,7 +601,7 @@ void TList::Delete(Option_t *option)
             Error("Delete", "A list is accessing an object (%p) already deleted (list name = %s)",
                   obj, GetName());
          else if (obj && obj->IsOnHeap())
-            TCollection::GarbageCollect(obj);
+            TCollection::GarbageCollect(obj, gc);
          else if (obj && obj->IsA()->GetDirectoryAutoAdd())
             removeDirectory.Add(obj);
 
@@ -553,6 +620,23 @@ void TList::Delete(Option_t *option)
       (*dirRem->IsA()->GetDirectoryAutoAdd())(dirRem, 0);
    }
    Changed();
+}
+
+void TList::Delete(Option_t *option)
+{
+
+   local_gc_t gc;
+   local_gc_t *gcp = nullptr;
+   if (IsUsingRWLock()) {
+      gc.reserve(GetEntries());
+      gcp = &gc;
+   }
+
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+      R__COLLECTION_WRITE_GUARD();
+      DeleteImpl(option, gcp);
+   }
 }
 
 #if 0
@@ -582,7 +666,7 @@ TObject *TList::FindObject(const char *name) const
    if (!name)
       return nullptr;
 
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
    for (TObjLink *lnk = FirstLink(); lnk != nullptr; lnk = lnk->Next()) {
       if (TObject *obj = lnk->GetObject()) {
@@ -609,7 +693,7 @@ TObject *TList::FindObject(const TObject *obj) const
    if (!obj)
       return nullptr;
 
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
    TObjLink *lnk = FirstLink();
 
@@ -627,12 +711,8 @@ TObject *TList::FindObject(const TObject *obj) const
 
 TObjLink *TList::FindLink(const TObject *obj, Int_t &idx) const
 {
-   R__COLLECTION_READ_GUARD();
-
    if (!obj)
       return nullptr;
-
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
 
    if (!fFirst) return 0;
 
@@ -654,11 +734,41 @@ TObjLink *TList::FindLink(const TObject *obj, Int_t &idx) const
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+/// Returns a shared pointer to the TObjLink object that contains object obj. In idx it returns
+/// the position of the object in the list.
+
+TList::TObjLinkPtr_t TList::FindLinkSP(const TObject *obj, Int_t &idx) const
+{
+   if (!obj)
+      return TObjLinkPtr_t();
+
+   if (!fFirst) return TObjLinkPtr_t();
+
+   TObject *object;
+   // use pointer to shared pointer here to avoid incrementing
+   // reference counters unnecessarily
+   const TObjLinkPtr_t *lnk = &fFirst;
+   idx = 0;
+
+   while (*lnk) {
+      object = (*lnk)->GetObject();
+      if (object) {
+         if (object->TestBit(kNotDeleted)) {
+            if (object->IsEqual(obj)) return *lnk;
+         }
+      }
+      lnk = &(*lnk)->fNext;
+      idx++;
+   }
+   return TObjLinkPtr_t();
+}
+
+////////////////////////////////////////////////////////////////////////////////
 /// Return the first object in the list. Returns 0 when list is empty.
 
 TObject *TList::First() const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
    R__COLLECTION_READ_GUARD();
 
    if (fFirst) return fFirst->GetObject();
@@ -675,7 +785,7 @@ TObject **TList::GetObjectRef(const TObject *obj) const
    if (!obj)
    return nullptr;
 
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
    TObjLink *lnk = FirstLink();
 
@@ -692,7 +802,7 @@ TObject **TList::GetObjectRef(const TObject *obj) const
 
 TObject *TList::Last() const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
    R__COLLECTION_READ_GUARD();
 
    if (fLast) return fLast->GetObject();
@@ -704,9 +814,6 @@ TObject *TList::Last() const
 
 TObjLink *TList::LinkAt(Int_t idx) const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
-   R__COLLECTION_READ_GUARD();
-
    Int_t    i = 0;
    TObjLink *lnk = fFirst.get();
    while (i < idx && lnk) {
@@ -721,7 +828,7 @@ TObjLink *TList::LinkAt(Int_t idx) const
 
 TIterator *TList::MakeIterator(Bool_t dir) const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
    R__COLLECTION_READ_GUARD();
 
    return new TListIter(this, dir);
@@ -732,9 +839,6 @@ TIterator *TList::MakeIterator(Bool_t dir) const
 
 TList::TObjLinkPtr_t TList::NewLink(TObject *obj, const TObjLinkPtr_t &prev)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-   R__COLLECTION_WRITE_GUARD();
-
    auto newlink = std::make_shared<TObjLink>(obj);
    if (prev) {
       InsertAfter(newlink, prev);
@@ -747,9 +851,6 @@ TList::TObjLinkPtr_t TList::NewLink(TObject *obj, const TObjLinkPtr_t &prev)
 
 TList::TObjLinkPtr_t TList::NewOptLink(TObject *obj, Option_t *opt, const TObjLinkPtr_t &prev)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-   R__COLLECTION_WRITE_GUARD();
-
    auto newlink = std::make_shared<TObjOptLink>(obj, opt);
    if (prev) {
       InsertAfter(newlink, prev);
@@ -763,13 +864,13 @@ TList::TObjLinkPtr_t TList::NewOptLink(TObject *obj, Option_t *opt, const TObjLi
 
 void TList::RecursiveRemove(TObject *obj)
 {
-   R__COLLECTION_WRITE_GUARD();
-
+//    R__COLLECTION_CHECK_GLOBAL_LOCK();
    if (!obj) return;
 
    // When fCache is set and has no previous and next node, it represents
    // the node being cleared and/or deleted.
    {
+      R__COLLECTION_READ_LOCKGUARD();
       auto cached = fCache.lock();
       if (cached && cached->fNext.get() == nullptr && cached->fPrev.lock().get() == nullptr) {
          TObject *ob = cached->GetObject();
@@ -777,7 +878,17 @@ void TList::RecursiveRemove(TObject *obj)
             ob->RecursiveRemove(obj);
          }
       }
+
+      if (!fFirst.get())
+         return;
    }
+
+   // Remove takes care of the locking itself
+   Remove(obj);
+
+   // TODO check here that the global lock is not held since this could lead to deadlocks
+   R__COLLECTION_READ_LOCKGUARD_GLOBAL(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
    if (!fFirst.get())
       return;
@@ -788,29 +899,7 @@ void TList::RecursiveRemove(TObject *obj)
       next = lnk->fNext;
       TObject *ob = lnk->GetObject();
       if (ob && ob->TestBit(kNotDeleted)) {
-         if (ob->IsEqual(obj)) {
-            lnk->SetObject(nullptr);
-            if (lnk == fFirst) {
-               fFirst = next;
-               if (lnk == fLast)
-                  fLast = fFirst;
-               else
-                  fFirst->fPrev.reset();
-               // DeleteLink(lnk);
-            } else if (lnk == fLast) {
-               fLast = lnk->fPrev.lock();
-               fLast->fNext.reset();
-               // DeleteLink(lnk);
-            } else {
-               lnk->Prev()->fNext = next;
-               lnk->Next()->fPrev = lnk->fPrev;
-               // DeleteLink(lnk);
-            }
-            fSize--;
-            fCache.reset();
-            Changed();
-         } else
-            ob->RecursiveRemove(obj);
+         ob->RecursiveRemove(obj);
       }
       lnk = next;
    }
@@ -819,12 +908,8 @@ void TList::RecursiveRemove(TObject *obj)
 ////////////////////////////////////////////////////////////////////////////////
 /// Remove object from the list.
 
-TObject *TList::Remove(TObject *obj)
+TObject *TList::RemoveImpl(TObject *obj)
 {
-   R__COLLECTION_WRITE_GUARD();
-
-   if (!obj) return 0;
-
    Int_t    idx;
    TObjLink *lnk = FindLink(obj, idx);
 
@@ -832,8 +917,6 @@ TObject *TList::Remove(TObject *obj)
 
    // return object found, which may be (pointer wise) different than the
    // input object (depending on what IsEqual() is doing)
-
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
 
    TObject *ob = lnk->GetObject();
    lnk->SetObject(nullptr);
@@ -863,18 +946,38 @@ TObject *TList::Remove(TObject *obj)
    return ob;
 }
 
+
+TObject *TList::Remove(TObject *obj)
+{
+   if (!obj) return 0;
+
+   Int_t idx;
+   // using a shared pointer here ensures the link doesn't get
+   // deleted from under us
+   TObjLinkPtr_t lnk;
+   {
+      // first check if the object is present in the collection
+      R__COLLECTION_READ_LOCKGUARD();
+      lnk = FindLinkSP(obj, idx);
+      if (!lnk) return 0;
+   }
+
+   R__COLLECTION_WRITE_LOCKGUARD();
+
+   // check if object was already removed by another thread in the meantime
+   if (!lnk->GetObject()) {
+      return 0;
+   }
+
+   return RemoveImpl(lnk.get());
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// Remove object link (and therefore the object it contains)
 /// from the list.
 
-TObject *TList::Remove(TObjLink *lnk)
+TObject *TList::RemoveImpl(TObjLink *lnk)
 {
-   R__COLLECTION_WRITE_GUARD();
-
-   if (!lnk) return 0;
-
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-
    TObject *obj = lnk->GetObject();
    lnk->SetObject(nullptr);
    if (lnk == fFirst.get()) {
@@ -903,12 +1006,23 @@ TObject *TList::Remove(TObjLink *lnk)
    return obj;
 }
 
+TObject *TList::Remove(TObjLink *lnk)
+{
+   R__COLLECTION_WRITE_GUARD();
+
+   if (!lnk) return 0;
+
+   R__COLLECTION_WRITE_LOCKGUARD();
+
+   return RemoveImpl(lnk);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// Remove the last object of the list.
 
 void TList::RemoveLast()
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
    R__COLLECTION_WRITE_GUARD();
 
    TObjLink *lnk = fLast.get();
@@ -936,7 +1050,7 @@ void TList::RemoveLast()
 
 void TList::Sort(Bool_t order)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
    R__COLLECTION_WRITE_GUARD();
 
    if (!fFirst) return;
@@ -983,7 +1097,7 @@ Bool_t TList::LnkCompare(const TObjLinkPtr_t &l1, const TObjLinkPtr_t &l2)
 
 std::shared_ptr<TObjLink> *TList::DoSort(std::shared_ptr<TObjLink> *head, Int_t n)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
    R__COLLECTION_WRITE_GUARD();
 
    std::shared_ptr<TObjLink> p1, p2, *h2, *t2;
@@ -1241,7 +1355,7 @@ void TList::Streamer(TBuffer &b)
       b.CheckByteCount(R__s, R__c,TList::IsA());
 
    } else {
-      R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+      R__COLLECTION_READ_LOCKGUARD();
 
       R__c = b.WriteVersion(TList::IsA(), kTRUE);
       TObject::Streamer(b);

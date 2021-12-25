@@ -107,13 +107,13 @@ TObjArray::~TObjArray()
 TObjArray& TObjArray::operator=(const TObjArray &a)
 {
    if (this != &a) {
-      R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+      R__COLLECTION_WRITE_LOCKGUARD();
 
       if (IsOwner())
          Delete();
       SetOwner(kFALSE);
 
-      Init(a.fSize, a.fLowerBound);
+      InitImpl(a.fSize, a.fLowerBound);
 
       for (Int_t i = 0; i < fSize; i++)
          fCont[i] = a.fCont[i];
@@ -130,11 +130,11 @@ TObjArray& TObjArray::operator=(const TObjArray &a)
 
 TObject *&TObjArray::operator[](Int_t i)
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
    int j = i-fLowerBound;
    if (j >= 0 && j < fSize) {
-      fLast = TMath::Max(j, GetAbsLast());
+      fLast = TMath::Max(j, GetAbsLastImpl());
       Changed();
       return fCont[j];
    }
@@ -148,7 +148,7 @@ TObject *&TObjArray::operator[](Int_t i)
 
 TObject *TObjArray::operator[](Int_t i) const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
    int j = i-fLowerBound;
    if (j >= 0 && j < fSize) return fCont[j];
@@ -163,7 +163,7 @@ TObject *TObjArray::operator[](Int_t i) const
 
 void TObjArray::AddFirst(TObject *obj)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
    fCont[0] = obj;
    if (fLast == -1)
@@ -177,7 +177,8 @@ void TObjArray::AddFirst(TObject *obj)
 
 void TObjArray::AddLast(TObject *obj)
 {
-   AddAtAndExpand(obj, GetAbsLast()+1+fLowerBound);
+   R__COLLECTION_WRITE_LOCKGUARD();
+   AddAtAndExpandImpl(obj, GetAbsLastImpl()+1+fLowerBound);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -191,9 +192,9 @@ void TObjArray::AddBefore(const TObject *before, TObject *obj)
    if (!before)
       AddFirst(obj);
    else {
-      R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+      R__COLLECTION_READ_LOCKGUARD();
 
-      Int_t idx = IndexOf(before) - fLowerBound;
+      Int_t idx = IndexOfImpl(before) - fLowerBound;
       if (idx == -1) {
          Error("AddBefore", "before not found, object not added");
          return;
@@ -217,9 +218,9 @@ void TObjArray::AddAfter(const TObject *after, TObject *obj)
    if (!after)
       AddLast(obj);
    else {
-      R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+      R__COLLECTION_READ_LOCKGUARD();
 
-      Int_t idx = IndexOf(after) - fLowerBound;
+      Int_t idx = IndexOfImpl(after) - fLowerBound;
       if (idx == -1) {
          Error("AddAfter", "after not found, object not added");
          return;
@@ -232,34 +233,42 @@ void TObjArray::AddAfter(const TObject *after, TObject *obj)
 /// Add object at position idx. If idx is larger than the current size
 /// of the array, expand the array (double its size).
 
-void TObjArray::AddAtAndExpand(TObject *obj, Int_t idx)
+void TObjArray::AddAtAndExpandImpl(TObject *obj, Int_t idx)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-
    if (idx < fLowerBound) {
       Error("AddAt", "out of bounds at %d in %zx", idx, (size_t)this);
       return;
    }
    if (idx-fLowerBound >= fSize)
-      Expand(TMath::Max(idx-fLowerBound+1, GrowBy(fSize)));
+      ExpandImpl(TMath::Max(idx-fLowerBound+1, GrowBy(fSize)));
    fCont[idx-fLowerBound] = obj;
-   fLast = TMath::Max(idx-fLowerBound, GetAbsLast());
+   fLast = TMath::Max(idx-fLowerBound, GetAbsLastImpl());
    Changed();
+}
+
+void TObjArray::AddAtAndExpand(TObject *obj, Int_t idx)
+{
+   R__COLLECTION_WRITE_LOCKGUARD();
+   AddAtAndExpandImpl(obj, idx);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// Add object at position ids. Give an error when idx is out of bounds
 /// (i.e. the array is not expanded).
 
-void TObjArray::AddAt(TObject *obj, Int_t idx)
+void TObjArray::AddAtImpl(TObject *obj, Int_t idx)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-
    if (!BoundsOk("AddAt", idx)) return;
 
    fCont[idx-fLowerBound] = obj;
-   fLast = TMath::Max(idx-fLowerBound, GetAbsLast());
+   fLast = TMath::Max(idx-fLowerBound, GetAbsLastImpl());
    Changed();
+}
+
+void TObjArray::AddAt(TObject *obj, Int_t idx)
+{
+   R__COLLECTION_WRITE_LOCKGUARD();
+   AddAtImpl(obj, idx);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -268,14 +277,14 @@ void TObjArray::AddAt(TObject *obj, Int_t idx)
 
 Int_t  TObjArray::AddAtFree(TObject *obj)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
    if (Last()) {    // <---------- This is to take in account "empty" TObjArray's
       Int_t i;
       for (i = 0; i < fSize; i++)
          if (!fCont[i]) {         // Add object at position i
             fCont[i] = obj;
-            fLast = TMath::Max(i, GetAbsLast());
+            fLast = TMath::Max(i, GetAbsLastImpl());
             Changed();
             return i+fLowerBound;
          }
@@ -291,9 +300,9 @@ TObject *TObjArray::After(const TObject *obj) const
 {
    if (!obj) return 0;
 
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
-   Int_t idx = IndexOf(obj) - fLowerBound;
+   Int_t idx = IndexOfImpl(obj) - fLowerBound;
    if (idx == -1 || idx == fSize-1) return 0;
 
    return fCont[idx+1];
@@ -306,9 +315,9 @@ TObject *TObjArray::Before(const TObject *obj) const
 {
    if (!obj) return 0;
 
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
-   Int_t idx = IndexOf(obj) - fLowerBound;
+   Int_t idx = IndexOfImpl(obj) - fLowerBound;
    if (idx == -1 || idx == 0) return 0;
 
    return fCont[idx-1];
@@ -318,14 +327,28 @@ TObject *TObjArray::Before(const TObject *obj) const
 /// Remove all objects from the array. Does not delete the objects
 /// unless the TObjArray is the owner (set via SetOwner()).
 
-void TObjArray::Clear(Option_t *)
+void TObjArray::ClearImpl(Option_t *, local_gc_t *gc)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-
    if (IsOwner())
-      Delete();
+      DeleteImpl("", gc);
    else
-      Init(fSize, fLowerBound);
+      InitImpl(fSize, fLowerBound);
+}
+
+void TObjArray::Clear(Option_t *option)
+{
+   local_gc_t gc;
+   local_gc_t *gcp = nullptr;
+   if (IsUsingRWLock()) {
+      gc.reserve(GetEntries());
+      gcp = &gc;
+   }
+
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+      R__COLLECTION_WRITE_GUARD();
+      ClearImpl(option, gcp);
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -333,7 +356,7 @@ void TObjArray::Clear(Option_t *)
 
 void TObjArray::Compress()
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
    Int_t j = 0;
 
@@ -353,7 +376,7 @@ void TObjArray::Compress()
 ////////////////////////////////////////////////////////////////////////////////
 /// Remove all objects from the array AND delete all heap based objects.
 
-void TObjArray::Delete(Option_t * /* opt */)
+void TObjArray::DeleteImpl(Option_t * /* opt */, local_gc_t *gc)
 {
    // In some case, for example TParallelCoord, a list (the pad's list of
    // primitives) will contain both the container and the containees
@@ -367,27 +390,39 @@ void TObjArray::Delete(Option_t * /* opt */)
    // from using Draw to Paint) but the structure might still exist elsewhere
    // so we keep this comment here.
 
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-
    // Since we set fCont[i] only after the deletion is completed, we do not
    // lose the connection and thus do not need to take any special action.
    for (Int_t i = 0; i < fSize; i++) {
       if (fCont[i] && fCont[i]->IsOnHeap()) {
-         TCollection::GarbageCollect(fCont[i]);
+         TCollection::GarbageCollect(fCont[i], gc);
          fCont[i] = 0;
       }
    }
 
-   Init(fSize, fLowerBound);
+   InitImpl(fSize, fLowerBound);
+}
+
+void TObjArray::Delete(Option_t *option)
+{
+   local_gc_t gc;
+   local_gc_t *gcp = nullptr;
+   if (IsUsingRWLock()) {
+      gc.reserve(GetEntries());
+      gcp = &gc;
+   }
+
+   {
+      R__COLLECTION_WRITE_LOCKGUARD();
+      R__COLLECTION_WRITE_GUARD();
+      DeleteImpl(option, gcp);
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// Expand or shrink the array to newSize elements.
 
-void TObjArray::Expand(Int_t newSize)
+void TObjArray::ExpandImpl(Int_t newSize)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-
    if (newSize < 0) {
       Error ("Expand", "newSize must be positive (%d)", newSize);
       return;
@@ -407,6 +442,12 @@ void TObjArray::Expand(Int_t newSize)
    fSize = newSize;
 }
 
+void TObjArray::Expand(Int_t newSize)
+{
+   R__COLLECTION_WRITE_LOCKGUARD();
+   ExpandImpl(newSize);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// Find an object in this collection using its name. Requires a sequential
 /// scan till the object has been found. Returns 0 if object with specified
@@ -414,9 +455,9 @@ void TObjArray::Expand(Int_t newSize)
 
 TObject *TObjArray::FindObject(const char *name) const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
-   Int_t nobjects = GetAbsLast()+1;
+   Int_t nobjects = GetAbsLastImpl()+1;
    for (Int_t i = 0; i < nobjects; ++i) {
       TObject *obj = fCont[i];
       if (obj && 0==strcmp(name, obj->GetName())) return obj;
@@ -433,9 +474,9 @@ TObject *TObjArray::FindObject(const char *name) const
 
 TObject *TObjArray::FindObject(const TObject *iobj) const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
-   Int_t nobjects = GetAbsLast()+1;
+   Int_t nobjects = GetAbsLastImpl()+1;
    for (Int_t i = 0; i < nobjects; ++i) {
       TObject *obj = fCont[i];
       if (obj && obj->IsEqual(iobj)) return obj;
@@ -474,12 +515,12 @@ void TObjArray::Streamer(TBuffer &b)
       Changed();
       b.CheckByteCount(R__s, R__c,TObjArray::IsA());
    } else {
-      R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+      R__COLLECTION_READ_LOCKGUARD();
 
       R__c = b.WriteVersion(TObjArray::IsA(), kTRUE);
       TObject::Streamer(b);
       fName.Streamer(b);
-      nobjects = GetAbsLast()+1;
+      nobjects = GetAbsLastImpl()+1;
       b << nobjects;
       b << fLowerBound;
 
@@ -495,7 +536,7 @@ void TObjArray::Streamer(TBuffer &b)
 
 TObject *TObjArray::First() const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
    return fCont[0];
 }
@@ -505,12 +546,12 @@ TObject *TObjArray::First() const
 
 TObject *TObjArray::Last() const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
    if (fLast == -1)
       return 0;
    else
-      return fCont[GetAbsLast()];
+      return fCont[GetAbsLastImpl()];
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -524,7 +565,7 @@ Int_t TObjArray::GetEntries() const
 {
    Int_t cnt = 0;
 
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
    for (Int_t i = 0; i < fSize; i++)
       if (fCont[i]) cnt++;
@@ -536,25 +577,29 @@ Int_t TObjArray::GetEntries() const
 /// Return absolute index to last object in array. Returns -1 in case
 /// array is empty.
 
-Int_t TObjArray::GetAbsLast() const
+Int_t TObjArray::GetAbsLastImpl() const
 {
    // For efficiency we need sometimes to update fLast so we have
    // to cast const away. Ugly, but making GetAbsLast() not const breaks
    // many other const functions.
 
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
-
    if (fLast == -2) {
       for (Int_t i = fSize-1; i >= 0; i--)
          if (fCont[i]) {
-            R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+            R__COLLECTION_WRITE_LOCKGUARD();
             ((TObjArray*)this)->fLast = i;
             return fLast;
          }
-      R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+      R__COLLECTION_WRITE_LOCKGUARD();
       ((TObjArray*)this)->fLast = -1;
    }
    return fLast;
+}
+
+Int_t TObjArray::GetAbsLast() const
+{
+   R__COLLECTION_READ_LOCKGUARD();
+   return GetAbsLastImpl();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -576,9 +621,9 @@ Int_t TObjArray::GetEntriesUnsafe() const
 
 Int_t TObjArray::GetLast() const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
-   return fLowerBound+GetAbsLast();
+   return fLowerBound+GetAbsLastImpl();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -589,9 +634,9 @@ TObject **TObjArray::GetObjectRef(const TObject *obj) const
    if (!obj)
       return fCont;
 
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
-   Int_t index = IndexOf(obj);
+   Int_t index = IndexOfImpl(obj);
    return &fCont[index];
 }
 
@@ -602,11 +647,9 @@ TObject **TObjArray::GetObjectRef(const TObject *obj) const
 ///  - obj == 0 Return the index of the first empty slot.
 ///             Returns lowerBound-1 in case array doesn't contain any empty slot.
 
-Int_t TObjArray::IndexOf(const TObject *obj) const
+Int_t TObjArray::IndexOfImpl(const TObject *obj) const
 {
    Int_t i;
-
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
 
    if (obj) {
       for (i = 0; i < fSize; i++)
@@ -621,13 +664,17 @@ Int_t TObjArray::IndexOf(const TObject *obj) const
    return fLowerBound-1;
 }
 
+Int_t TObjArray::IndexOf(const TObject *obj) const
+{
+   R__COLLECTION_READ_LOCKGUARD();
+   return IndexOfImpl(obj);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// Initialize a TObjArray.
 
-void TObjArray::Init(Int_t s, Int_t lowerBound)
+void TObjArray::InitImpl(Int_t s, Int_t lowerBound)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
-
    if (fCont && fSize != s) {
       TStorage::Dealloc(fCont);
       fCont = 0;
@@ -643,12 +690,19 @@ void TObjArray::Init(Int_t s, Int_t lowerBound)
    Changed();
 }
 
+void TObjArray::Init(Int_t s, Int_t lowerBound)
+{
+   R__COLLECTION_WRITE_LOCKGUARD();
+
+   InitImpl(s, lowerBound);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// Returns an array iterator.
 
 TIterator *TObjArray::MakeIterator(Bool_t dir) const
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
    return new TObjArrayIter(this, dir);
 }
 
@@ -672,7 +726,7 @@ void TObjArray::RecursiveRemove(TObject *obj)
    // We need to have the write lock even-though we are 'just'
    // reading as any insert or remove during the iteration will
    // invalidate fatally the cursor (e.g. might skip some items)
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
    for (int i = 0; i < fSize; i++) {
       if (fCont[i] && fCont[i]->TestBit(kNotDeleted) && fCont[i]->IsEqual(obj)) {
@@ -695,7 +749,7 @@ TObject *TObjArray::RemoveAt(Int_t idx)
 {
    if (!BoundsOk("RemoveAt", idx)) return 0;
 
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
    int i = idx-fLowerBound;
 
@@ -720,9 +774,9 @@ TObject *TObjArray::Remove(TObject *obj)
 {
    if (!obj) return 0;
 
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
-   Int_t idx = IndexOf(obj) - fLowerBound;
+   Int_t idx = IndexOfImpl(obj) - fLowerBound;
 
    if (idx == -1) return 0;
 
@@ -745,7 +799,7 @@ void TObjArray::RemoveRange(Int_t idx1, Int_t idx2)
    if (!BoundsOk("RemoveRange", idx1)) return;
    if (!BoundsOk("RemoveRange", idx2)) return;
 
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
    idx1 -= fLowerBound;
    idx2 -= fLowerBound;
@@ -774,7 +828,7 @@ void TObjArray::RemoveRange(Int_t idx1, Int_t idx2)
 
 void TObjArray::SetLast(Int_t last)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
    if (last == -2 || last == -1)
       fLast = last;
@@ -794,7 +848,7 @@ void TObjArray::SetLast(Int_t last)
 
 void TObjArray::Randomize(Int_t ntimes)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
    for (Int_t i = 0; i < ntimes; i++) {
       for (Int_t j = 0; j < fLast; j++) {
@@ -817,9 +871,9 @@ void TObjArray::Randomize(Int_t ntimes)
 
 void TObjArray::Sort(Int_t upto)
 {
-   R__COLLECTION_WRITE_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_WRITE_LOCKGUARD();
 
-   if (GetAbsLast() == -1 || fSorted) return;
+   if (GetAbsLastImpl() == -1 || fSorted) return;
    for (Int_t i = 0; i < fSize; i++)
       if (fCont[i]) {
          if (!fCont[i]->IsSortable()) {
@@ -840,7 +894,7 @@ void TObjArray::Sort(Int_t upto)
 
 Int_t TObjArray::BinarySearch(TObject *op, Int_t upto)
 {
-   R__COLLECTION_READ_LOCKGUARD(ROOT::gCoreMutex);
+   R__COLLECTION_READ_LOCKGUARD();
 
    Int_t   base, position, last, result = 0;
    TObject *op2;

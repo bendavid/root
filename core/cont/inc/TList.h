@@ -56,6 +56,7 @@ protected:
 
    TObjLink          *LinkAt(Int_t idx) const;
    TObjLink          *FindLink(const TObject *obj, Int_t &idx) const;
+   TObjLinkPtr_t      FindLinkSP(const TObject *obj, Int_t &idx) const;
 
    TObjLinkPtr_t *DoSort(TObjLinkPtr_t *head, Int_t n);
 
@@ -67,6 +68,18 @@ protected:
    // virtual void       DeleteLink(TObjLink *lnk);
 
    void InsertAfter(const TObjLinkPtr_t &newlink, const TObjLinkPtr_t &prev);
+
+   void      AddFirstImpl(TObject *obj);
+   void      AddFirstImpl(TObject *obj, Option_t *opt);
+   void      AddLastImpl(TObject *obj);
+   void      AddLastImpl(TObject *obj, Option_t *opt);
+   void      AddAtImpl(TObject *obj, Int_t idx);
+   void      AddAfterImpl(const TObject *after, TObject *obj);
+   void      AddAfterImpl(TObjLink *after, TObject *obj);
+   void      AddBeforeImpl(const TObject *before, TObject *obj);
+   void      AddBeforeImpl(TObjLink *before, TObject *obj);
+   TObject  *RemoveImpl(TObject *obj);
+   TObject  *RemoveImpl(TObjLink *lnk);
 
 private:
    TList(const TList&) = delete;
@@ -112,6 +125,10 @@ public:
 
    virtual void      Sort(Bool_t order = kSortAscending);
    Bool_t            IsAscending() { return fAscending; }
+
+   //FIXME do these need to be virtual? or protected and accessed through friend classes?
+   void      ClearImpl(Option_t *option="", local_gc_t *gc = nullptr);
+   void      DeleteImpl(Option_t *option="", local_gc_t *gc = nullptr);
 
    ClassDef(TList,5)  //Doubly linked list
 };

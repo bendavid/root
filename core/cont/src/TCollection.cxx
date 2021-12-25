@@ -722,7 +722,7 @@ void TCollection::EmptyGarbageCollection()
 ////////////////////////////////////////////////////////////////////////////////
 /// Add to the list of things to be cleaned up.
 
-void TCollection::GarbageCollect(TObject *obj)
+void TCollection::GarbageCollect(TObject *obj, local_gc_t *gc)
 {
    {
       R__LOCKGUARD2(gCollectionMutex);
@@ -733,7 +733,13 @@ void TCollection::GarbageCollect(TObject *obj)
          }
       }
    }
-   delete obj;
+   if (gc != nullptr) {
+      gc->emplace_back(obj);
+   }
+   else {
+      R__COLLECTION_CHECK_GLOBAL_LOCK();
+      delete obj;
+   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
