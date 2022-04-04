@@ -154,6 +154,7 @@ Bool_t   TFile::fgCacheFileForce = kFALSE;
 Bool_t   TFile::fgCacheFileDisconnected = kTRUE;
 UInt_t   TFile::fgOpenTimeout = TFile::kEternalTimeout;
 Bool_t   TFile::fgOnlyStaged = kFALSE;
+Bool_t   TFile::fgRegisterUUID = kTRUE;
 #ifdef R__USE_IMT
 ROOT::Internal::RConcurrentHashColl TFile::fgTsSIHashes;
 #endif
@@ -547,12 +548,14 @@ TFile::~TFile()
    SafeDelete(fInfoCache);
    SafeDelete(fOpenPhases);
 
-   {
+   if (fGlobalRegistration || fgRegisterUUID) {
       R__LOCKGUARD(gROOTMutex);
       if (fGlobalRegistration) {
          gROOT->GetListOfClosedObjects()->Remove(this);
       }
-      gROOT->GetUUIDs()->RemoveUUID(GetUniqueID());
+      if (fgRegisterUUID) {
+         gROOT->GetUUIDs()->RemoveUUID(GetUniqueID());
+      }
    }
 
    if (IsOnHeap()) {
@@ -834,12 +837,14 @@ void TFile::Init(Bool_t create)
       }
    }
 
-   {
+   if (fGlobalRegistration || fgRegisterUUID) {
       R__LOCKGUARD(gROOTMutex);
       if (fGlobalRegistration) {
          gROOT->GetListOfFiles()->Add(this);
       }
-      gROOT->GetUUIDs()->AddUUID(fUUID, this);
+      if (fgRegisterUUID) {
+         gROOT->GetUUIDs()->AddUUID(fUUID, this);
+      }
    }
 
    // Create StreamerInfo index
@@ -5153,4 +5158,28 @@ Int_t TFile::GetBytesToPrefetch() const
       return ((bytes < 0) ? 0 : bytes);
    }
    return 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// Specify if the UUID must be registered in the global list.
+///
+/// If fgRegisterUUID is true (default) the TFile UUID will be added
+/// to the global list, allowing a TFile object to be referenced by a TRef.
+/// if fgRegisterUUID is false, then TRefs to TFiles will not be functional,
+/// but the use of the global write lock to fill and clear the global UUID
+/// list will be avoided, potentially speeding up multithreaded event loops
+
+void TFile::SetRegisterUUID(Bool_t registeruuid)
+{
+   fgRegisterUUID = registeruuid;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// If the TFile UUID should be registered in the global list
+///
+/// See TFile::SetRegisterUUID for more documentation.
+
+Bool_t TFile::GetRegisterUUID()
+{
+   return fgRegisterUUID;
 }

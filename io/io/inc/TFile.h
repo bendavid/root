@@ -134,6 +134,7 @@ protected:
    static std::atomic<Int_t>     fgReadCalls;             ///<Number of bytes read from all TFile objects
    static Int_t     fgReadaheadSize;         ///<Readahead buffer size
    static Bool_t    fgReadInfo;              ///<if true (default) ReadStreamerInfo is called when opening a file
+   static Bool_t    fgRegisterUUID;          ///<if true (default) TFile UUID is registered in the global list
 
    virtual EAsyncOpenStatus GetAsyncOpenStatus() { return fAsyncOpenStatus; }
    virtual void        Init(Bool_t create);
@@ -337,6 +338,9 @@ public:
    static UInt_t       GetOpenTimeout(); // in ms
    static Bool_t       SetOnlyStaged(Bool_t onlystaged);
    static Bool_t       GetOnlyStaged();
+   
+   static void         SetRegisterUUID(Bool_t registeruuid=kTRUE);
+   static Bool_t       GetRegisterUUID();
 
    ClassDefOverride(TFile,8)  //ROOT file
 };
