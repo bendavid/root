@@ -2297,14 +2297,18 @@ TInterpreter::CallFuncIFacePtr_t TClingCallFunc::IFacePtr()
       const Decl *decl = GetFunctionOrShadowDecl();
 
       R__LOCKGUARD_CLING(gInterpreterMutex);
-      map<const Decl *, void *>::iterator I = gWrapperStore.find(decl);
-      if (I != gWrapperStore.end()) {
-         fWrapper = (tcling_callfunc_Wrapper_t) I->second;
-      } else {
-         fWrapper = make_wrapper();
-      }
 
-      fReturnIsRecordType = GetDecl()->getReturnType().getCanonicalType()->isRecordType();
+      //check if another thread already did it
+      if (!fWrapper) {
+         map<const Decl *, void *>::iterator I = gWrapperStore.find(decl);
+         if (I != gWrapperStore.end()) {
+            fWrapper = (tcling_callfunc_Wrapper_t) I->second;
+         } else {
+            fWrapper = make_wrapper();
+         }
+
+         fReturnIsRecordType = GetDecl()->getReturnType().getCanonicalType()->isRecordType();
+      }
    }
    return TInterpreter::CallFuncIFacePtr_t(fWrapper);
 }
