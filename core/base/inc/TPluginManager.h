@@ -89,6 +89,7 @@
 #include "TMethodCall.h"
 #include "TVirtualMutex.h"
 #include "TInterpreter.h"
+#include <mutex>
 
 class TEnv;
 class TList;
@@ -116,6 +117,8 @@ private:
    AtomicInt_t  fCanCall;   //!if 1 fCallEnv is ok, -1 fCallEnv is not ok, 0 fCallEnv not setup yet.
    Bool_t       fIsMacro;   // plugin is a macro and not a library
    Bool_t       fIsGlobal;  // plugin ctor is a global function
+   std::once_flag fLoadStatusFlag; // plugin is loaded
+   Int_t        fLoadStatus; // cached plugin load status
 
    TPluginHandler() :
       fBase(), fRegexp(), fClass(), fPlugin(), fCtor(), fOrigin(),
@@ -138,6 +141,7 @@ private:
    void   SetupCallEnv();
 
    Bool_t CheckForExecPlugin(Int_t nargs);
+   void   LoadPluginImpl();
 
 public:
    const char *GetClass() const { return fClass; }
@@ -146,18 +150,14 @@ public:
 
    template <typename... T> Longptr_t ExecPluginImpl(const T&... params)
    {
-      auto nargs = sizeof...(params);
+      constexpr auto nargs = sizeof...(params);
       if (!CheckForExecPlugin((Int_t)nargs)) return 0;
 
-      // The fCallEnv object is shared, since the PluginHandler is a global
-      // resource ... and both SetParams and Execute ends up taking the lock
-      // individually anyway ...
-
-      R__LOCKGUARD(gInterpreterMutex);
-      fCallEnv->SetParams(params...);
-
       Longptr_t ret;
-      fCallEnv->Execute(ret);
+      const void *args[nargs] = { &params... };
+      // locking is handled within this call, but will only be needed
+      // on the first call for initialization
+      fCallEnv->Execute(nullptr, args, nargs, &ret);
 
       return ret;
    }

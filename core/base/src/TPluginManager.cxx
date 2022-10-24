@@ -126,7 +126,8 @@ TPluginHandler::TPluginHandler(const char *base, const char *regexp,
    fMethod(nullptr),
    fCanCall(0),
    fIsMacro(kFALSE),
-   fIsGlobal(kFALSE)
+   fIsGlobal(kFALSE),
+   fLoadStatus(-1)
 {
    TString aclicMode, arguments, io;
    TString fname = gSystem->SplitAclicMode(fPlugin, aclicMode, arguments, io);
@@ -247,20 +248,30 @@ Int_t TPluginHandler::CheckPlugin() const
       return gROOT->LoadClass(fClass, fPlugin, kTRUE);
 }
 
+
+////////////////////////////////////////////////////////////////////////////////
+/// Load the plugin library for this handler. Sets status to 0 on successful loading
+/// and -1 in case the library does not exist or in case of error.
+void TPluginHandler::LoadPluginImpl() {
+   if (fIsMacro) {
+      if (TClass::GetClass(fClass)) fLoadStatus = 0;
+      else fLoadStatus = gROOT->LoadMacro(fPlugin);
+   } else {
+      // first call also loads dependent libraries declared via the rootmap file
+      if (TClass::LoadClass(fClass, /* silent = */ kFALSE)) fLoadStatus = 0;
+      else fLoadStatus = gROOT->LoadClass(fClass, fPlugin);
+   }
+}
+
+
 ////////////////////////////////////////////////////////////////////////////////
 /// Load the plugin library for this handler. Returns 0 on successful loading
 /// and -1 in case the library does not exist or in case of error.
-
 Int_t TPluginHandler::LoadPlugin()
 {
-   if (fIsMacro) {
-      if (TClass::GetClass(fClass)) return 0;
-      return gROOT->LoadMacro(fPlugin);
-   } else {
-      // first call also loads dependent libraries declared via the rootmap file
-      if (TClass::LoadClass(fClass, /* silent = */ kFALSE)) return 0;
-      return gROOT->LoadClass(fClass, fPlugin);
-   }
+   // call once and cache the result to reduce lock contention
+   std::call_once(fLoadStatusFlag, &TPluginHandler::LoadPluginImpl, this);
+   return fLoadStatus;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
