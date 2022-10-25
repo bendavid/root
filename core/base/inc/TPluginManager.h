@@ -89,6 +89,7 @@
 #include "TMethodCall.h"
 #include "TVirtualMutex.h"
 #include "TInterpreter.h"
+#include "TClass.h"
 
 class TEnv;
 class TList;
@@ -97,6 +98,7 @@ class TFunction;
 class TPluginManager;
 
 #include <atomic>
+#include <mutex>
 
 class TPluginHandler : public TObject {
 
@@ -113,9 +115,12 @@ private:
    TString      fOrigin;    // origin of plugin handler definition
    TMethodCall *fCallEnv;   //!ctor method call environment
    TFunction   *fMethod;    //!ctor method or global function
+   std::vector<const TClass *> fArgTupleClasses; //! cached TClass pointers for fast comparison
    AtomicInt_t  fCanCall;   //!if 1 fCallEnv is ok, -1 fCallEnv is not ok, 0 fCallEnv not setup yet.
    Bool_t       fIsMacro;   // plugin is a macro and not a library
    Bool_t       fIsGlobal;  // plugin ctor is a global function
+   std::once_flag fLoadStatusFlag; // plugin is loaded
+   Int_t fLoadStatus;              // cached plugin load status
 
    TPluginHandler() :
       fBase(), fRegexp(), fClass(), fPlugin(), fCtor(), fOrigin(),
@@ -138,11 +143,53 @@ private:
    void   SetupCallEnv();
 
    Bool_t CheckForExecPlugin(Int_t nargs);
+   void LoadPluginImpl();
 
 public:
    const char *GetClass() const { return fClass; }
    Int_t       CheckPlugin() const;
    Int_t       LoadPlugin();
+
+   // zero arguments case
+   Longptr_t ExecPluginT()
+   {
+      if (!CheckForExecPlugin(0))
+         return 0;
+
+      Longptr_t ret;
+      // locking is handled within this call, but will only be needed
+      // on the first call for initialization
+      fCallEnv->Execute(nullptr, nullptr, 0, &ret);
+
+      return ret;
+   }
+
+   // with arguments
+   template <typename... T>
+   Longptr_t ExecPluginT(T... params)
+   {
+      constexpr auto nargs = sizeof...(params);
+      if (!CheckForExecPlugin((Int_t)nargs))
+         return 0;
+
+      const TClass *tupleclass = TClass::GetClass<std::tuple<T...>>();
+
+      if (tupleclass != fArgTupleClasses[nargs - 1]) {
+         if (gDebug > 1) {
+            Warning("ExecPluginT", "Mismatched argument types %s vs %s", tupleclass->GetName(),
+                    fArgTupleClasses[nargs - 1]->GetName());
+         }
+         return 0;
+      }
+
+      Longptr_t ret;
+      const void *args[nargs] = {&params...};
+      // locking is handled within this call, but will only be needed
+      // on the first call for initialization
+      fCallEnv->Execute(nullptr, args, nargs, &ret);
+
+      return ret;
+   }
 
    template <typename... T> Longptr_t ExecPluginImpl(const T&... params)
    {
