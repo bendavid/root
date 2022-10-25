@@ -1969,14 +1969,17 @@ void *TClingCallFunc::InterfaceMethod()
       const Decl *decl = GetFunctionOrShadowDecl();
 
       R__LOCKGUARD_CLING(gInterpreterMutex);
-      map<const Decl *, void *>::iterator I = gWrapperStore.find(decl);
-      if (I != gWrapperStore.end()) {
-         fWrapper = (tcling_callfunc_Wrapper_t) I->second;
-      } else {
-         fWrapper = make_wrapper();
+      // check if another thread already did it
+      if (!fWrapper) {
+         map<const Decl *, void *>::iterator I = gWrapperStore.find(decl);
+         if (I != gWrapperStore.end()) {
+            fWrapper = (tcling_callfunc_Wrapper_t)I->second;
+         } else {
+            fWrapper = make_wrapper();
+         }
       }
    }
-   return (void *)fWrapper;
+   return (void *)fWrapper.load();
 }
 
 bool TClingCallFunc::IsValid() const
@@ -1998,11 +2001,14 @@ TInterpreter::CallFuncIFacePtr_t TClingCallFunc::IFacePtr()
       const Decl *decl = GetFunctionOrShadowDecl();
 
       R__LOCKGUARD_CLING(gInterpreterMutex);
-      map<const Decl *, void *>::iterator I = gWrapperStore.find(decl);
-      if (I != gWrapperStore.end()) {
-         fWrapper = (tcling_callfunc_Wrapper_t) I->second;
-      } else {
-         fWrapper = make_wrapper();
+      // check if another thread already did it
+      if (!fWrapper) {
+         map<const Decl *, void *>::iterator I = gWrapperStore.find(decl);
+         if (I != gWrapperStore.end()) {
+            fWrapper = (tcling_callfunc_Wrapper_t)I->second;
+         } else {
+            fWrapper = make_wrapper();
+         }
       }
    }
    return TInterpreter::CallFuncIFacePtr_t(fWrapper);
