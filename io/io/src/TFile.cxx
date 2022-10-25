@@ -4157,7 +4157,14 @@ TFile *TFile::Open(const char *url, Option_t *options, const char *ftitle,
             if ((h = gROOT->GetPluginManager()->FindHandler("TFile", name))) {
                if (h->LoadPlugin() == -1)
                   return nullptr;
-               f = (TFile*) h->ExecPlugin(5, name.Data(), option, ftitle, compress, netopt);
+
+               // fast version to reduce locking
+               f = (TFile *)h->ExecPluginT<const char *, Option_t *, const char *, Int_t, Int_t>(
+                  name.Data(), option, ftitle, compress, netopt);
+               // fallback
+               if (!f) {
+                  f = (TFile *)h->ExecPlugin(5, name.Data(), option, ftitle, compress, netopt);
+               }
             }
 
          } else if (type == kWeb) {
