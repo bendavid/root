@@ -340,20 +340,20 @@ void CPyCppyy::CPPMethod::SetPyError_(PyObject* msg)
     // this is the case where no Python error has occured yet, or an internal
     // one without traceback set a new error with context
         if (details.empty()) {
-            PyErr_Format(errtype, "%s =>\n    %s: %s", cdoc, cname, cmsg ? cmsg : "");
+            PyErr_Format(errtype, "Failed to call \"%s\" =>\n    %s: %s", cdoc, cname, cmsg ? cmsg : "");
         } else if (cmsg) {
-            PyErr_Format(errtype, "%s =>\n    %s: %s (%s)", cdoc, cname, cmsg, details.c_str());
+            PyErr_Format(errtype, "Failed to call \"%s\" =>\n    %s: %s (%s)", cdoc, cname, cmsg, details.c_str());
         } else {
-            PyErr_Format(errtype, "%s =>\n    %s: %s", cdoc, cname, details.c_str());
+            PyErr_Format(errtype, "Failed to call \"%s\" =>\n    %s: %s", cdoc, cname, details.c_str());
         }
     } else {
     // augment the top message with context information
         PyObject *&topMessage = ((CPPExcInstance*)evalue)->fTopMessage;
         Py_XDECREF(topMessage);
         if (msg) {
-            topMessage = CPyCppyy_PyText_FromFormat("%s =>\n    %s: %s | ", cdoc, cname, cmsg);
+            topMessage = CPyCppyy_PyText_FromFormat("Failed to call \"%s\" =>\n    %s: %s | ", cdoc, cname, cmsg);
         } else {
-            topMessage = CPyCppyy_PyText_FromFormat("%s =>\n    %s: ", cdoc, cname);
+            topMessage = CPyCppyy_PyText_FromFormat("Failed to call \"%s\" =>\n    %s: ", cdoc, cname);
         }
         // restore the updated error
 #if PY_VERSION_HEX >= 0x030c0000
