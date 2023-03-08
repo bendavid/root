@@ -822,6 +822,7 @@ T CallT(Cppyy::TCppMethod_t method, Cppyy::TCppObject_t self, size_t nargs, void
     T t{};
     if (WrapperCall(method, nargs, args, (void*)self, &t))
         return t;
+    throw std::runtime_error("failed to resolve function");
     return (T)-1;
 }
 
@@ -852,6 +853,7 @@ void* Cppyy::CallR(TCppMethod_t method, TCppObject_t self, size_t nargs, void* a
     void* r = nullptr;
     if (WrapperCall(method, nargs, args, (void*)self, &r))
         return r;
+    throw std::runtime_error("failed to resolve function");
     return nullptr;
 }
 
@@ -865,9 +867,12 @@ char* Cppyy::CallS(
         cstr = cppstring_to_cstring(*cppresult);
         *length = cppresult->size();
         cppresult->std::string::~basic_string();
-    } else
-        *length = 0;
-    free((void*)cppresult);
+        free((void *)cppresult);
+    } else {
+       *length = 0;
+       free((void *)cppresult);
+       throw std::runtime_error("failed to resolve function");
+    }
     return cstr;
 }
 
@@ -877,6 +882,7 @@ Cppyy::TCppObject_t Cppyy::CallConstructor(
     void* obj = nullptr;
     if (WrapperCall(method, nargs, args, nullptr, &obj))
         return (TCppObject_t)obj;
+    throw std::runtime_error("failed to resolve function");
     return (TCppObject_t)0;
 }
 
@@ -894,6 +900,7 @@ Cppyy::TCppObject_t Cppyy::CallO(TCppMethod_t method,
     if (WrapperCall(method, nargs, args, self, obj))
         return (TCppObject_t)obj;
     ::operator delete(obj);
+    throw std::runtime_error("failed to resolve function");
     return (TCppObject_t)0;
 }
 
