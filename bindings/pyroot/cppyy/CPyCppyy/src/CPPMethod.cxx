@@ -804,8 +804,10 @@ PyObject* CPyCppyy::CPPMethod::Call(
     CPPInstance*& self, PyObject* args, PyObject* kwds, CallContext* ctxt)
 {
 // setup as necessary
-    if (fArgsRequired == -1 && !Initialize(ctxt))
-        return nullptr;
+if (fArgsRequired == -1 && !Initialize(ctxt)) {
+   SetPyError_(CPyCppyy_PyText_FromFormat("Initialization failed."));
+   return nullptr;
+}
 
 // fetch self, verify, and put the arguments in usable order
     if (!(args = PreProcessArgs(self, args, kwds)))

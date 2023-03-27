@@ -65,7 +65,9 @@ protected:
 
     virtual bool InitExecutor_(Executor*&, CallContext* ctxt = nullptr);
 
-private:
+    void SetPyError_(PyObject *msg);
+
+ private:
     void Copy_(const CPPMethod&);
     void Destroy_();
 
@@ -73,8 +75,6 @@ private:
     PyObject* ExecuteProtected(void*, ptrdiff_t, CallContext*);
 
     bool InitConverters_();
-
-    void SetPyError_(PyObject* msg);
 
 private:
 // representation
