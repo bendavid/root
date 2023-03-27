@@ -845,8 +845,11 @@ CPyCppyy::Executor* CPyCppyy::CreateExecutor(const std::string& fullType)
         result = new FunctionPointerExecutor(
             resolvedType.substr(0, pos1), resolvedType.substr(pos2+2, pos3-pos2-1));
     } else {
-    // unknown: void* may work ("user knows best"), void will fail on use of return value
-        h = (cpd == "") ? gExecFactories.find("void") : gExecFactories.find("void*");
+       // unknown:
+       PyErr_Format(PyExc_TypeError,
+                    "Failed to resolve function return type \"%s\" This is possibly/likely related to "
+                    "https://github.com/root-project/root/issues/12548",
+                    fullType.c_str());
     }
 
     if (!result && h != gExecFactories.end())
