@@ -30,8 +30,10 @@ PyObject* CPyCppyy::CPPFunction::Call(
     CPPInstance*& self, PyObject* args, PyObject* kwds, CallContext* ctxt)
 {
 // setup as necessary
-    if (fArgsRequired == -1 && !this->Initialize(ctxt))
-        return nullptr;
+if (fArgsRequired == -1 && !this->Initialize(ctxt)) {
+   SetPyError_(CPyCppyy_PyText_FromFormat("Initialization failed."));
+   return nullptr;
+}
 
 // if function was attached to a class, self will be non-zero and should be
 // the first function argument, so reorder
