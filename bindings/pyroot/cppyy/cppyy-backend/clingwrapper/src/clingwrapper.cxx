@@ -1806,57 +1806,74 @@ Cppyy::TCppMethod_t Cppyy::GetMethodTemplate(TCppScope_t scope, const std::strin
 // we'll/ manage the new TFunctions instead and will assume that they are cached on the
 // calling side to prevent multiple creations.
 
-// redirect diagnostics, taking the lock to make sure no other calls pollute the results
-R__WRITE_LOCKGUARD(ROOT::gCoreMutex);
+    // keep track of diagnostics from individual calls such that on success we only
+    // fill in the diagnostics from the successful call, but that all output is
+    // retained on failure
+    std::ostringstream diagnostics_all;
+    std::ostringstream diagnostics_last;
 
-TInterpreter::RedirectDiagnostics redirectRAII(gInterpreter, diagnostics, /*enableColors*/ true, /*indent*/ 4);
+    // redirect diagnostics, taking the lock to make sure no other calls pollute the results
+    R__WRITE_LOCKGUARD(ROOT::gCoreMutex);
 
-TFunction *func = nullptr;
-ClassInfo_t *cl = nullptr;
-if (scope == (cppyy_scope_t)GLOBAL_HANDLE) {
-   func = gROOT->GetGlobalFunctionWithPrototype(name.c_str(), proto.c_str());
-   if (func && name.back() == '>' && name != func->GetName())
-      func = nullptr; // happens if implicit conversion matches the overload
+    TInterpreter::RedirectDiagnostics redirectRAII(gInterpreter, diagnostics_last, /*enableColors*/ true, /*indent*/ 4);
+
+    TFunction *func = nullptr;
+    ClassInfo_t *cl = nullptr;
+    if (scope == (cppyy_scope_t)GLOBAL_HANDLE) {
+        func = gROOT->GetGlobalFunctionWithPrototype(name.c_str(), proto.c_str());
+        diagnostics_all << diagnostics_last.str();
+        if (func && name.back() == '>' && name != func->GetName())
+            func = nullptr; // happens if implicit conversion matches the overload
 } else {
    TClassRef &cr = type_from_handle(scope);
    if (cr.GetClass()) {
-      func = cr->GetMethodWithPrototype(name.c_str(), proto.c_str());
-      if (!func) {
-         cl = cr->GetClassInfo();
-         // try base classes to cover a common 'using' case (TODO: this is stupid and misses
-         // out on base classes; fix that with improved access to Cling)
-         TCppIndex_t nbases = GetNumBases(scope);
-         for (TCppIndex_t i = 0; i < nbases; ++i) {
-            TClassRef &base = type_from_handle(GetScope(GetBaseName(scope, i)));
-            if (base.GetClass()) {
-               func = base->GetMethodWithPrototype(name.c_str(), proto.c_str());
-               if (func)
-                  break;
-            }
-         }
+            diagnostics_last = std::ostringstream();
+            func = cr->GetMethodWithPrototype(name.c_str(), proto.c_str());
+            diagnostics_all << diagnostics_last.str();
+            if (!func) {
+                cl = cr->GetClassInfo();
+                // try base classes to cover a common 'using' case (TODO: this is stupid and misses
+                // out on base classes; fix that with improved access to Cling)
+                TCppIndex_t nbases = GetNumBases(scope);
+                for (TCppIndex_t i = 0; i < nbases; ++i) {
+                    TClassRef &base = type_from_handle(GetScope(GetBaseName(scope, i)));
+                    if (base.GetClass()) {
+                        diagnostics_last = std::ostringstream();
+                        func = base->GetMethodWithPrototype(name.c_str(), proto.c_str());
+                        diagnostics_all << diagnostics_last.str();
+                        if (func)
+                            break;
+                    }
+                }
       }
    }
 }
 
     if (!func && name.back() == '>' && (cl || scope == (cppyy_scope_t)GLOBAL_HANDLE)) {
     // try again, ignoring proto in case full name is complete template
-        auto declid = gInterpreter->GetFunction(cl, name.c_str());
-        if (declid) {
-             auto existing = gMethodTemplates.find(declid);
-             if (existing == gMethodTemplates.end()) {
-                 auto cw = new_CallWrapper(declid, name);
-                 existing = gMethodTemplates.insert(std::make_pair(declid, cw)).first;
-             }
-             return (TCppMethod_t)existing->second;
+   diagnostics_last = std::ostringstream();
+   auto declid = gInterpreter->GetFunction(cl, name.c_str());
+   diagnostics_all << diagnostics_last.str();
+   if (declid) {
+      auto existing = gMethodTemplates.find(declid);
+      if (existing == gMethodTemplates.end()) {
+                auto cw = new_CallWrapper(declid, name);
+                existing = gMethodTemplates.insert(std::make_pair(declid, cw)).first;
+      }
+      diagnostics << diagnostics_last.str();
+      return (TCppMethod_t)existing->second;
         }
     }
 
     if (func) {
     // make sure we didn't match a non-templated overload
-        if (func->ExtraProperty() & kIsTemplateSpec)
-            return (TCppMethod_t)new_CallWrapper(func);
+        if (func->ExtraProperty() & kIsTemplateSpec) {
+      diagnostics << diagnostics_last.str();
+      return (TCppMethod_t)new_CallWrapper(func);
+        }
 
     // disregard this non-templated method as it will be considered when appropriate
+        diagnostics << diagnostics_all.str();
         return (TCppMethod_t)nullptr;
     }
 
@@ -1864,20 +1881,25 @@ if (scope == (cppyy_scope_t)GLOBAL_HANDLE) {
     if (name.back() == '>') {
         auto pos = name.find('<');
         if (pos != std::string::npos) {
-           TCppMethod_t cppmeth = GetMethodTemplate(scope, name.substr(0, pos), proto, diagnostics);
-           if (cppmeth) {
-              // allow if requested template names match up to the result
-              const std::string &alt = GetMethodFullName(cppmeth);
-              if (name.size() < alt.size() && alt.find('<') == pos) {
-                 const std::string &partial = name.substr(pos, name.size() - 1 - pos);
-                 if (strncmp(partial.c_str(), alt.substr(pos, alt.size() - 1 - pos).c_str(), partial.size()) == 0)
-                    return cppmeth;
-              }
+      diagnostics_last = std::ostringstream();
+      TCppMethod_t cppmeth = GetMethodTemplate(scope, name.substr(0, pos), proto, diagnostics_last);
+      diagnostics_all << diagnostics_last.str();
+      if (cppmeth) {
+                // allow if requested template names match up to the result
+                const std::string &alt = GetMethodFullName(cppmeth);
+                if (name.size() < alt.size() && alt.find('<') == pos) {
+                    const std::string &partial = name.substr(pos, name.size() - 1 - pos);
+                    if (strncmp(partial.c_str(), alt.substr(pos, alt.size() - 1 - pos).c_str(), partial.size()) == 0) {
+                        diagnostics << diagnostics_last.str();
+                        return cppmeth;
+                    }
+                }
            }
         }
     }
 
 // failure ...
+    diagnostics << diagnostics_all.str();
     return (TCppMethod_t)nullptr;
 }
 
