@@ -184,11 +184,16 @@ PyObject* TemplateProxy::Instantiate(const std::string& fname,
             proto = name_v1.substr(1, name_v1.size()-2);
     }
 
-    std::ostringstream diagnostics;
+    // keep track of diagnostics from individual calls such that on success we only
+    // use the diagnostics from the successful call, but that all output is
+    // retained on failure
+    std::ostringstream diagnostics_all;
+    std::ostringstream diagnostics_last;
 
     // the following causes instantiation as necessary
     Cppyy::TCppScope_t scope = ((CPPClass*)fTI->fPyClass)->fCppType;
-    Cppyy::TCppMethod_t cppmeth = Cppyy::GetMethodTemplate(scope, fname, proto, diagnostics);
+    Cppyy::TCppMethod_t cppmeth = Cppyy::GetMethodTemplate(scope, fname, proto, diagnostics_last);
+    diagnostics_all << diagnostics_last.str();
     if (cppmeth) {    // overload stops here
     // A successful instantiation needs to be cached to pre-empt future instantiations. There
     // are two names involved, the original asked (which may be partial) and the received.
@@ -212,12 +217,15 @@ PyObject* TemplateProxy::Instantiate(const std::string& fname,
 		pos = proto.find("initializer_list", pos + 6);
 	    }
 
-       Cppyy::TCppMethod_t m2 = Cppyy::GetMethodTemplate(scope, fname, proto, diagnostics);
+       std::ostringstream diagnostics2;
+       Cppyy::TCppMethod_t m2 = Cppyy::GetMethodTemplate(scope, fname, proto, diagnostics2);
+       diagnostics_all << diagnostics2.str();
        if (m2 && m2 != cppmeth) {
           // replace if the new method with vector was found; otherwise just continue
           // with the previously found method with initializer_list.
           cppmeth = m2;
           resname = Cppyy::GetMethodFullName(cppmeth);
+          diagnostics_last.swap(diagnostics2);
        }
         }
 
@@ -235,6 +243,9 @@ PyObject* TemplateProxy::Instantiate(const std::string& fname,
             Py_DECREF(pyol);
             Py_DECREF(pycachename);
             Py_DECREF(dct);
+
+            PyErr_Format(PyExc_TypeError, "Failed to instantiate \"%s(%s)\"\n%s", fname.c_str(), proto.c_str(),
+                         diagnostics_all.str().c_str());
             return nullptr;
         }
 
@@ -306,18 +317,18 @@ PyObject* TemplateProxy::Instantiate(const std::string& fname,
             CPPOverload_Type.tp_descr_get(pyol, bNeedsRebind ? fSelf : nullptr, (PyObject*)&CPPOverload_Type);
         Py_DECREF(pyol);
         // check if diagnostics contains only spaces since this can happen as a result of clang indenting
-        const bool emptydiag = diagnostics.str().find_first_not_of(' ') == diagnostics.str().npos;
+        const bool emptydiag = diagnostics_last.str().find_first_not_of(' ') == diagnostics_last.str().npos;
         if (!emptydiag) {
            std::ostringstream warnmsg;
            warnmsg << "Compiler warnings during instantiation of \"" << fname << "(" << proto << ")\"\n"
-                   << diagnostics.str();
+                   << diagnostics_last.str();
            PyErr_WarnEx(PyExc_Warning, warnmsg.str().c_str(), 1);
         }
         return pymeth;
     }
 
     PyErr_Format(PyExc_TypeError, "Failed to instantiate \"%s(%s)\"\n%s", fname.c_str(), proto.c_str(),
-                 diagnostics.str().c_str());
+                 diagnostics_all.str().c_str());
     return nullptr;
 }
 
