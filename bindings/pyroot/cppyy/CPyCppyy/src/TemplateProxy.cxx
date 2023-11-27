@@ -829,10 +829,12 @@ static PyObject* tpp_overload(TemplateProxy* pytmpl, PyObject* args)
     PyObject* pytype = 0, *pyvalue = 0, *pytrace = 0;
     PyErr_Fetch(&pytype, &pyvalue, &pytrace);
 
+    // FIXME need to actually print the diagnostics also here
+    std::ostringstream diagnostics;
     Cppyy::TCppScope_t scope = ((CPPClass*)pytmpl->fTI->fPyClass)->fCppType;
     Cppyy::TCppMethod_t cppmeth = Cppyy::GetMethodTemplate(
         scope, CPyCppyy_PyText_AsString(pytmpl->fTI->fCppName),
-        proto.substr(1, proto.size()-2));
+        proto.substr(1, proto.size()-2), diagnostics);
 
     if (!cppmeth) {
         PyErr_Restore(pytype, pyvalue, pytrace);
