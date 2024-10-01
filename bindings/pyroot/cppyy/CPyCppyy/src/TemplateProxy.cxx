@@ -212,12 +212,14 @@ PyObject* TemplateProxy::Instantiate(const std::string& fname,
                 pos = proto.find("initializer_list", pos + 6);
             }
 
-            Cppyy::TCppMethod_t m2 = Cppyy::GetMethodTemplate(scope, fname, proto, diagnostics);
+            std::ostringstream diagnostics2;
+            Cppyy::TCppMethod_t m2 = Cppyy::GetMethodTemplate(scope, fname, proto, diagnostics2);
             if (m2 && m2 != cppmeth) {
                // replace if the new method with vector was found; otherwise just continue
                // with the previously found method with initializer_list.
                cppmeth = m2;
                resname = Cppyy::GetMethodFullName(cppmeth);
+               diagnostics = std::move(diagnostics2);
             }
         }
 
