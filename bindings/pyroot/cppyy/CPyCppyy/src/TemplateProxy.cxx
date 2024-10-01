@@ -808,6 +808,8 @@ static PyObject* tpp_overload(TemplateProxy* pytmpl, PyObject* args)
     Cppyy::TCppMethod_t cppmeth = (Cppyy::TCppMethod_t) 0;
     std::string proto;
 
+    std::ostringstream diagnostics;
+
     if (PyArg_ParseTuple(args, const_cast<char*>("s|i:__overload__"), &sigarg, &want_const)) {
         want_const = PyTuple_GET_SIZE(args) == 1 ? -1 : want_const;
 
@@ -825,7 +827,7 @@ static PyObject* tpp_overload(TemplateProxy* pytmpl, PyObject* args)
 
         scope = ((CPPClass*)pytmpl->fTI->fPyClass)->fCppType;
         cppmeth = Cppyy::GetMethodTemplate(
-            scope, pytmpl->fTI->fCppName, proto.substr(1, proto.size()-2));
+            scope, pytmpl->fTI->fCppName, proto.substr(1, proto.size()-2), diagnostics);
     } else if (PyArg_ParseTuple(args, const_cast<char*>("O|i:__overload__"), &sigarg_tuple, &want_const)) {
         PyErr_Clear();
         want_const = PyTuple_GET_SIZE(args) == 1 ? -1 : want_const;
@@ -857,10 +859,18 @@ static PyObject* tpp_overload(TemplateProxy* pytmpl, PyObject* args)
 
         scope = ((CPPClass*)pytmpl->fTI->fPyClass)->fCppType;
         cppmeth = Cppyy::GetMethodTemplate(
-            scope, pytmpl->fTI->fCppName, proto.substr(1, proto.size()-2));
+            scope, pytmpl->fTI->fCppName, proto.substr(1, proto.size()-2), diagnostics);
     } else {
         PyErr_Format(PyExc_TypeError, "Unexpected arguments to __overload__");
         return nullptr;
+    }
+
+    const bool emptydiag = diagnostics.str().find_first_not_of(' ') == diagnostics.str().npos;
+    if (!emptydiag) {
+        std::ostringstream warnmsg;
+        warnmsg << "Compiler warnings during instantiation of \"" << pytmpl->fTI->fCppName << "(" << proto << ")\"\n"
+                << diagnostics.str();
+        PyErr_WarnEx(PyExc_Warning, warnmsg.str().c_str(), 1);
     }
 
 // else attempt instantiation
@@ -868,6 +878,8 @@ static PyObject* tpp_overload(TemplateProxy* pytmpl, PyObject* args)
     PyErr_Fetch(&pytype, &pyvalue, &pytrace);
 
     if (!cppmeth) {
+        PyErr_Format(PyExc_TypeError, "Failed to instantiate \"%s(%s)\"\n%s", pytmpl->fTI->fCppName.c_str(), proto.c_str(),
+                    diagnostics.str().c_str());
         PyErr_Restore(pytype, pyvalue, pytrace);
         return nullptr;
     }
