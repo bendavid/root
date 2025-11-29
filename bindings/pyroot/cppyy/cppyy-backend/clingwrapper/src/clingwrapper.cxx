@@ -2212,6 +2212,7 @@ Cppyy::TCppMethod_t Cppyy::GetMethodTemplate(TCppScope_t scope, const std::strin
     if (name.back() == '>') {
         auto pos = name.find('<');
         if (pos != std::string::npos) {
+            std::ostringstream diagnostics2;
             TCppMethod_t cppmeth = GetMethodTemplate(scope, name.substr(0, pos), proto, diagnostics2);
             if (cppmeth) {
             // allow if requested template names match up to the result
@@ -2228,6 +2229,7 @@ Cppyy::TCppMethod_t Cppyy::GetMethodTemplate(TCppScope_t scope, const std::strin
                         
                 }
             }
+            diagnostics << diagnostics2.str();
         }
     }
 
