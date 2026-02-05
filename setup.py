@@ -84,7 +84,9 @@ class ROOTBuild(_build):
             f"-DCMAKE_INSTALL_INCLUDEDIR={ROOT_BUILD_INTERNAL_DIRNAME}/ROOT/include "
             f"-DCMAKE_INSTALL_LIBDIR={ROOT_BUILD_INTERNAL_DIRNAME}/ROOT/lib "
             f"-DCMAKE_INSTALL_PYTHONDIR={ROOT_BUILD_INTERNAL_DIRNAME} "
-            f"-DCMAKE_INSTALL_PREFIX={INSTALL_DIR} -B {BUILD_DIR} -S {SOURCE_DIR}"
+            f"-DCMAKE_INSTALL_PREFIX={INSTALL_DIR} -B {BUILD_DIR} -S {SOURCE_DIR} "
+            f"-DCMAKE_CXX_STANDARD=20 "
+            f"-Dclad=ON"
         )
         subprocess.run(configure_command, check=True)
 
