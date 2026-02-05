@@ -103,6 +103,8 @@ class ROOTBuild(_build):
             f"-DCMAKE_INSTALL_PYTHONDIR={ROOT_BUILD_INTERNAL_DIRNAME} "
             f"-DCMAKE_INSTALL_SYSCONFDIR={ROOT_BUILD_INTERNAL_DIRNAME}/ROOT/etc "
             f"-DCMAKE_INSTALL_TUTDIR={ROOT_BUILD_INTERNAL_DIRNAME}/ROOT/tutorials "
+            f"-DCMAKE_CXX_STANDARD=20 "
+            f"-Dclad=ON"
         )
         subprocess.run(configure_command, check=True)
 
