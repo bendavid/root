@@ -149,3 +149,5 @@ if(NOT MSVC OR CMAKE_SIZEOF_VOID_P EQUAL 8 OR win_broken_tests)
     # https://github.com/root-project/root/issues/9809
     ROOT_ADD_PYUNITTEST(pyroot_array_numpy_views array_conversions.py PYTHON_DEPS numpy)
 endif()
+
+ROOT_ADD_PYUNITTEST(pyroot_template_instantiation_diagnostics template_instantiation_diagnostics.py)
