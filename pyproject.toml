@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "root"
-dynamic = ["version"]
+version = "6.42.0rc1+wmass"
 requires-python = ">=3.11"
 maintainers = [
   {name = "Vincenzo Eduardo Padulano", email = "vincenzo.eduardo.padulano@cern.ch"}
@@ -15,25 +15,6 @@ license = {file = "LICENSE"}
 dependencies = [
   "numpy",
 ]
-
-# The wheel version is derived automatically from ROOT's version macros
-# in RVersion.hxx bumped every release, with a PEP 440 pre-release suffix
-# appended. ex.: ROOT 6.42.02  ->  wheel version "6.42.2a1".
-# The "a1" marks an alpha pre-release. Bump it manually ("a1" -> "a2")
-# only to re-publish a wheel for a ROOT version already on PyPI since PyPI
-# refuses a filename it has already seen, this should only happen in case
-# of a failed/ broken upload of the first wheel.
-# Reset to "a1" for the next ROOT release.
-[[tool.dynamic-metadata]]
-provider = "scikit_build_core.metadata.regex"
-field = "version"
-input = "core/foundation/inc/ROOT/RVersion.hxx"
-regex = '''(?sx)
-  \#define \s+ ROOT_VERSION_MAJOR \s+ (?P<major>\d+) .*?
-  \#define \s+ ROOT_VERSION_MINOR \s+ (?P<minor>\d+) .*?
-  \#define \s+ ROOT_VERSION_PATCH \s+ (?P<patch>\d+)
-'''
-result = "{major}.{minor}.{patch}a1"
 
 # Point backend to python packages and to explicitly use Ninja
 [tool.scikit-build]
@@ -97,9 +78,27 @@ imt="ON"
 roofit="ON"
 mathmore="ON"
 
-# Expose the ROOT cli as an executable command via _rootcli wrapper 
+# Expose the ROOT cli as an executable command via _rootcli wrapper, and the other executables in ROOT/bin
+# through a generic dispatcher, so that they end up on PATH in the environment the wheel is installed into
 [project.scripts]
 root = "ROOT._rootcli:main"
+root-config = "ROOT._rootcli:dispatch"
+hadd = "ROOT._rootcli:dispatch"
+rootbrowse = "ROOT._rootcli:dispatch"
+rootcp = "ROOT._rootcli:dispatch"
+rootdrawtree = "ROOT._rootcli:dispatch"
+rooteventselector = "ROOT._rootcli:dispatch"
+rootls = "ROOT._rootcli:dispatch"
+rootmkdir = "ROOT._rootcli:dispatch"
+rootmv = "ROOT._rootcli:dispatch"
+rootprint = "ROOT._rootcli:dispatch"
+rootreadspeed = "ROOT._rootcli:dispatch"
+rootrm = "ROOT._rootcli:dispatch"
+rootslimtree = "ROOT._rootcli:dispatch"
+rootcling = "ROOT._rootcli:dispatch"
+genreflex = "ROOT._rootcli:dispatch"
+prepareHistFactory = "ROOT._rootcli:dispatch"
+hist2workspace = "ROOT._rootcli:dispatch"
 
 [tool.cibuildwheel]
 build-frontend = { name = "build" }
