@@ -114,6 +114,14 @@ if(IS_ABSOLUTE ${CMAKE_INSTALL_TUTDIR})
 else()
   set(tutdir ${prefix}/${CMAKE_INSTALL_TUTDIR})
 endif()
+if(_wheel_build)
+  # In a wheel the install prefix is site-packages, with all install directories below ROOT/
+  # (see pyproject.toml), while ROOTSYS as determined at runtime and by root-config (from the
+  # location of bin/) is site-packages/ROOT, so drop the leading ROOT/ from the ROOTSYS-relative paths
+  foreach(_dir etcdir bindir libdir incdir mandir plugindir datadir ttffontdir jsrootdir openui5dir macrodir srcdir iconpath docdir tutdir)
+    string(REPLACE "${prefix}/ROOT/" "${prefix}/" ${_dir} "${${_dir}}")
+  endforeach()
+endif()
 
 set(buildx11 ${value${x11}})
 set(x11libdir -L${X11_LIBRARY_DIR})
