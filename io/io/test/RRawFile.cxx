@@ -3,6 +3,11 @@
 #include "TFile.h"
 
 #include "ROOT/RRawFileTFile.hxx"
+
+#include <atomic>
+#include <memory>
+#include <thread>
+#include <vector>
 using ROOT::Internal::RRawFileTFile;
 
 namespace {
@@ -320,4 +325,66 @@ TEST(RRawFile, ReadVBypassesBuffer)
    EXPECT_EQ(1u, mock.ReadAt(&c, 1, 1));
    EXPECT_EQ('b', c);
    EXPECT_EQ(3u, mock.fNumReadAt);
+}
+
+TEST(RRawFile, ShallowClone)
+{
+   std::string content;
+   for (int i = 0; i < 4096; ++i)
+      content.push_back(static_cast<char>('a' + (i * 7) % 26));
+   FileRaii guard("test_rrawfile_shallowclone", content);
+
+   // A clone of a file that is not open yet is an independent, not yet open file
+   auto f = RRawFile::Create(guard.GetPath());
+   auto unopened = f->ShallowClone();
+   EXPECT_FALSE(unopened->IsOpen());
+   EXPECT_EQ(content.size(), unopened->GetSize());
+
+   f->SetBuffering(false);
+   EXPECT_EQ(content.size(), f->GetSize());
+   ASSERT_TRUE(f->IsOpen());
+
+   // A clone of an open file shares the open file handle: it is open already and keeps the buffering mode
+   auto clone = f->ShallowClone();
+   EXPECT_TRUE(clone->IsOpen());
+   EXPECT_FALSE(clone->IsBuffering());
+   EXPECT_EQ(content.size(), clone->GetSize());
+   EXPECT_EQ(0u, clone->GetFilePos());
+
+   // The clone remains valid after the original is gone
+   f.reset();
+   char buf[16];
+   EXPECT_EQ(16u, clone->ReadAt(buf, 16, 100));
+   EXPECT_EQ(content.substr(100, 16), std::string(buf, 16));
+
+   // Concurrent reads from shallow clones of the same file
+   std::vector<std::unique_ptr<RRawFile>> clones;
+   for (int t = 0; t < 8; ++t)
+      clones.emplace_back(clone->ShallowClone());
+   std::atomic<int> nErrors{0};
+   std::vector<std::thread> threads;
+   for (int t = 0; t < 8; ++t) {
+      threads.emplace_back([&, t]() {
+         auto &file = *clones[t];
+         for (int i = 0; i < 200; ++i) {
+            const std::uint64_t offset = (t * 509 + i * 131) % (content.size() - 64);
+            char b1[32], b2[32];
+            if (i % 2 == 0) {
+               if (file.ReadAt(b1, 32, offset) != 32 || content.compare(offset, 32, b1, 32) != 0)
+                  nErrors++;
+            } else {
+               RRawFile::RIOVec iovec[2];
+               iovec[0] = {b1, offset, 32, 0};
+               iovec[1] = {b2, offset + 32, 32, 0};
+               file.ReadV(iovec, 2);
+               if (iovec[0].fOutBytes != 32 || iovec[1].fOutBytes != 32 || content.compare(offset, 32, b1, 32) != 0 ||
+                   content.compare(offset + 32, 32, b2, 32) != 0)
+                  nErrors++;
+            }
+         }
+      });
+   }
+   for (auto &t : threads)
+      t.join();
+   EXPECT_EQ(0, nErrors.load());
 }

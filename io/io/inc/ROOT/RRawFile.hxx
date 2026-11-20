@@ -146,6 +146,14 @@ protected:
    /// Open the file if not already open. Otherwise noop.
    void EnsureOpen();
 
+   /// To be used by ShallowClone() implementations: mark the clone as open, with the same buffering mode as this
+   /// object. The OS read-ahead advice is not re-applied: it is a property of the shared file handle.
+   void InitShallowClone(RRawFile &clone) const
+   {
+      clone.fIsOpen = fIsOpen;
+      clone.fIsBuffering = fIsBuffering;
+   }
+
 public:
    RRawFile(std::string_view url, ROptions options);
    RRawFile(const RRawFile &) = delete;
@@ -154,6 +162,13 @@ public:
 
    /// Create a new RawFile that accesses the same resource.  The file pointer is reset to zero.
    virtual std::unique_ptr<RRawFile> Clone() const = 0;
+   /// Create a new RawFile that shares the underlying, already open file handle (file descriptor, remote connection
+   /// state) of this one, if the transport supports it, so that no new open is needed. The clone has its own buffers,
+   /// file pointer and cached size, and it can be used concurrently with this object and with other clones from
+   /// different threads (as long as no thread changes the state of the shared handle, e.g. through SetBuffering()).
+   /// The clone has the same buffering mode as this object. If this object is not open yet, or if the transport does
+   /// not support sharing the handle, the result is the same as Clone().
+   virtual std::unique_ptr<RRawFile> ShallowClone() const { return Clone(); }
 
    /// Factory method that returns a suitable concrete implementation according to the transport in the url
    static std::unique_ptr<RRawFile> Create(std::string_view url, ROptions options = ROptions());
