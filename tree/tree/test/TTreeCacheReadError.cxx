@@ -1,5 +1,6 @@
 #include "ROOT/TestSupport.hxx"
 
+#include "TEnv.h"
 #include "TFile.h"
 #include "TTree.h"
 #include "TTreeCacheUnzip.h"
@@ -37,9 +38,14 @@ protected:
    static constexpr int kCacheSize = 20000;
 
    static std::unique_ptr<ROOT::TestSupport::FileRaii> gFileGuard;
+   static int gAsyncReading;
 
    static void SetUpTestSuite()
    {
+      // The failures are injected into the vectored reads that fill the cache. With asynchronous reading
+      // (TFile.AsyncReading), the cache only announces the blocks with vectored reads and reads them one by one.
+      gAsyncReading = gEnv->GetValue("TFile.AsyncReading", 0);
+      gEnv->SetValue("TFile.AsyncReading", 0);
       gFileGuard = std::make_unique<ROOT::TestSupport::FileRaii>(kFileName);
       TFile f(kFileName, "RECREATE");
       TTree t("t", "t");
@@ -56,7 +62,11 @@ protected:
       t.Write();
    }
 
-   static void TearDownTestSuite() { gFileGuard.reset(); }
+   static void TearDownTestSuite()
+   {
+      gFileGuard.reset();
+      gEnv->SetValue("TFile.AsyncReading", gAsyncReading);
+   }
 
    /// Read all entries of `t`, checking their content, and return the number of entries that could not be read.
    static int ReadAll(TTree &t)
@@ -84,6 +94,7 @@ protected:
 };
 
 std::unique_ptr<ROOT::TestSupport::FileRaii> TTreeCacheReadError::gFileGuard;
+int TTreeCacheReadError::gAsyncReading = 0;
 
 /// Use a TTreeCacheUnzip for the tree while in scope.
 class UnzipCacheRAII {

@@ -28,6 +28,8 @@
 #include "TEnv.h"
 #include "TFile.h"
 #include "TFileCacheRead.h"
+#include <cerrno>
+#include <unistd.h>
 #include "TFileCacheWrite.h"
 #include "TFilePrefetch.h"
 #include "TMathBase.h"
@@ -505,8 +507,26 @@ Int_t TFileCacheRead::ReadBufferExtNormal(char *buf, Long64_t pos, Int_t len, In
          // Block found, the caller will get it
 
          if (buf) {
-            // disable cache to avoid infinite recursion
-            if (fFile->ReadBuffer(buf, pos, len)) {
+            if (fFile->IsA() == TFile::Class() && fFile->GetFd() >= 0) {
+               // Plain local file: the block was announced with POSIX_FADV_WILLNEED, read it directly. (TFile::ReadBuffer
+               // would go through this cache again, i.e. recurse infinitely.)
+               Long64_t off = pos + fFile->GetArchiveOffset();
+               Long64_t left = len;
+               char *cur = buf;
+               while (left > 0) {
+                  ssize_t r = ::pread(fFile->GetFd(), cur, left, off);
+                  if (r < 0 && errno == EINTR)
+                     continue;
+                  if (r <= 0) {
+                     Error("ReadBufferExtNormal", "error reading %d bytes at offset %lld from %s", len, pos,
+                           fFile->GetName());
+                     return -1;
+                  }
+                  cur += r;
+                  off += r;
+                  left -= r;
+               }
+            } else if (fFile->ReadBuffer(buf, pos, len)) {
                return -1;
             }
             fFile->SetOffset(pos+len);

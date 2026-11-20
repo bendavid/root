@@ -589,6 +589,14 @@ TFile::TFile(const char *fname1, Option_t *option, const char *ftitle, Int_t com
          return;
       }
       fWritable = kFALSE;
+#if defined(R__LINUX) && !defined(R__WINGCC)
+      // With asynchronous reading, the read cache announces the blocks it needs (see ReadBufferAsync()): disable the
+      // kernel read-ahead, which would otherwise expand the reads (e.g. to whole 4 MiB objects on CephFS). Only for the
+      // files opened with READ_WITHOUT_GLOBALREGISTRATION, i.e. by TTreeProcessorMT, RDataFrame and the TChains they
+      // use, which read the trees through a TTreeCache: other reads keep the kernel read-ahead.
+      if (!fGlobalRegistration && gEnv->GetValue("TFile.AsyncReading", 0))
+         posix_fadvise(fD, 0, 0, POSIX_FADV_RANDOM);
+#endif
    }
 
    // calling virtual methods from constructor not a good idea, but it is how code was developed
@@ -4858,10 +4866,11 @@ Bool_t TFile::Cp(const char *src, const char *dst, Bool_t progressbar,
 }
 
 //______________________________________________________________________________
-//The next statement is not active anymore on Linux.
-//Using posix_fadvise introduces a performance penalty (10 %) on optimized files
-//and in addition it destroys the information of TTreePerfStats
-#if defined(R__neverLINUX) && !defined(R__WINGCC)
+// Asynchronous reading via posix_fadvise(POSIX_FADV_WILLNEED) on Linux, used by TFileCacheRead (e.g. the TTreeCache)
+// if enabled with `TFile.AsyncReading: 1` in .rootrc. It was previously disabled on Linux (a 10% penalty was reported
+// on optimized files, and it disturbs TTreePerfStats); on high-latency storage, it lets the kernel fetch the blocks of
+// a cache fill concurrently instead of one after the other.
+#if defined(R__LINUX) && !defined(R__WINGCC)
 Bool_t TFile::ReadBufferAsync(Long64_t offset, Int_t len)
 {
    // Read specified byte range asynchronously. Actually we tell the kernel
@@ -4873,13 +4882,11 @@ Bool_t TFile::ReadBufferAsync(Long64_t offset, Int_t len)
    if (IsA() != TFile::Class())
       return kTRUE;
 
+   // ROOT uses len == 0 to probe the readahead capabilities. According to POSIX, len == 0 means "all data following
+   // offset": do not change the advice in that case (it would e.g. undo the POSIX_FADV_RANDOM set when opening).
+   if (len == 0)
+      return kFALSE;
    int advice = POSIX_FADV_WILLNEED;
-   if (len == 0) {
-      // according POSIX spec if len is zero, all data following offset
-      // is specified. Nevertheless ROOT uses zero to probe readahead
-      // capabilities.
-      advice = POSIX_FADV_NORMAL;
-   }
    Double_t start = 0;
    if (gPerfStats) start = TTimeStamp();
 #if defined(R__SEEK64)
