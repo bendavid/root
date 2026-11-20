@@ -16,6 +16,7 @@
   #include "ROOT/RIoUring.hxx"
 #endif
 
+#include "TEnv.h"
 #include "TError.h"
 
 #include <cerrno>
@@ -32,6 +33,14 @@
 
 namespace {
 constexpr int kDefaultBlockSize = 4096; // If fstat() does not provide a block size hint, use this value instead
+
+/// Whether ReadV() announces its requests to the kernel (POSIX_FADV_WILLNEED) before reading them when io_uring is
+/// not available; can be turned off with `RRawFile.ReadVHints: 0` in .rootrc
+bool AreReadVHintsEnabled()
+{
+   static const bool enabled = gEnv ? (gEnv->GetValue("RRawFile.ReadVHints", 1) != 0) : true;
+   return enabled;
+}
 } // anonymous namespace
 
 ROOT::Internal::RRawFileUnix::RRawFileUnix(std::string_view url, ROptions options) : RRawFile(url, options) {}
@@ -139,6 +148,17 @@ void ROOT::Internal::RRawFileUnix::ReadVImpl(RIOVec *ioVec, unsigned int nReq)
          Warning("RRawFileUnix",
               "io_uring setup failed, falling back to blocking I/O in ReadV");
          uring_failed = true;
+      }
+   }
+#endif
+#ifndef __APPLE__
+   // Without io_uring, announce all requests to the kernel first, so that it fetches them concurrently in the
+   // background rather than one after the other, then read them in order (mostly from the page cache). With the
+   // read-ahead advice for unbuffered reads (POSIX_FADV_RANDOM), the kernel fetches exactly the requested ranges.
+   if (nReq > 1 && AreReadVHintsEnabled()) {
+      for (unsigned int i = 0; i < nReq; ++i) {
+         if (ioVec[i].fSize > 0)
+            posix_fadvise(fFileDes, ioVec[i].fOffset, ioVec[i].fSize, POSIX_FADV_WILLNEED);
       }
    }
 #endif
