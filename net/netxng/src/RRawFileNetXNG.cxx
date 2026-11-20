@@ -14,7 +14,9 @@
 #include <TError.h>
 
 #include <cctype>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -62,7 +64,9 @@ std::unique_ptr<ROOT::Internal::RRawFile> ROOT::Internal::RRawFileNetXNG::Clone(
 std::uint64_t ROOT::Internal::RRawFileNetXNG::GetSizeImpl()
 {
    XrdCl::StatInfo *info = nullptr;
-   auto st = pImpl->file.Stat( true, info );
+   // The stat information returned by the open request (kXR_retstat) is cached by XrdCl: use it rather than issuing
+   // another round trip to the server
+   auto st = pImpl->file.Stat( false, info );
    if( !st.IsOK() )
      throw std::runtime_error( "Cannot determine size of '" + fUrl + "', " +
                                st.ToString() + "; " + st.GetErrorMessage() );
@@ -142,6 +146,18 @@ ROOT::Internal::RRawFile::RIOVecLimits ROOT::Internal::RRawFileNetXNG::GetReadVL
    XrdCl::URL dataServer(pImpl->file.GetDataServer());
 #endif
 
+   // The limits are a property of the data server: query them once per server rather than for every file
+   static std::mutex sLimitsMutex;
+   static std::map<std::string, RIOVecLimits> sLimitsByServer;
+   const std::string serverId = dataServer.GetHostId();
+   {
+      std::lock_guard<std::mutex> guard(sLimitsMutex);
+      if (auto it = sLimitsByServer.find(serverId); it != sLimitsByServer.end()) {
+         fIOVecLimits = it->second;
+         return *fIOVecLimits;
+      }
+   }
+
    XrdCl::FileSystem fs(dataServer);
    XrdCl::Buffer arg;
    XrdCl::Buffer *response = nullptr;
@@ -179,5 +195,9 @@ ROOT::Internal::RRawFile::RIOVecLimits ROOT::Internal::RRawFileNetXNG::GetReadVL
       fIOVecLimits->fMaxSingleSize = std::stoi(readvMaxSingleSize);
    }
 
+   {
+      std::lock_guard<std::mutex> guard(sLimitsMutex);
+      sLimitsByServer[serverId] = *fIOVecLimits;
+   }
    return *fIOVecLimits;
 }
