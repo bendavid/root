@@ -11,6 +11,7 @@
  *************************************************************************/
 
 #include "Rtypes.h"
+#include <ROOT/RConcurrentHashColl.hxx>
 #include <ROOT/RConfig.hxx>
 #include <ROOT/RError.hxx>
 #include <ROOT/RMiniFile.hxx>
@@ -864,14 +865,26 @@ void ROOT::Internal::RMiniFileReader::LoadStreamerInfo()
    const std::uint64_t nbytesInfo = fNbytesKeyAndInfo - key.fKeyLen;
    const std::uint64_t seekInfo = fSeekKeyInfo + key.fKeyLen;
    const std::uint32_t uncompLenInfo = key.fObjLen;
-   auto streamerInfo = MakeUninitArray<char>(uncompLenInfo);
+   auto onDisk = MakeUninitArray<char>(nbytesInfo);
+   ReadBuffer(onDisk.get(), nbytesInfo, seekInfo);
+
+   // As in TFile::ReadStreamerInfo(), skip streamer info records that have been processed already, e.g. when reading
+   // many files written by the same program: building and checking the streamer infos takes the global lock for
+   // writing, which serializes (and, with many threads opening files concurrently, convoys) the opening of files.
+   // The key is not part of the hash: it contains a time stamp.
+   static ROOT::Internal::RConcurrentHashColl gProcessedStreamerInfos;
+   const auto hash = ROOT::Internal::RConcurrentHashColl::Hash(onDisk.get(), nbytesInfo);
+   if (gProcessedStreamerInfos.Find(hash))
+      return;
+
+   std::unique_ptr<char[]> streamerInfo;
    if (nbytesInfo == uncompLenInfo) {
       // Uncompressed
-      ReadBuffer(streamerInfo.get(), nbytesInfo, seekInfo);
+      streamerInfo = std::move(onDisk);
    } else {
-      auto buffer = MakeUninitArray<std::byte>(nbytesInfo);
-      ReadBuffer(buffer.get(), nbytesInfo, seekInfo);
-      RNTupleDecompressor::Unzip(buffer.get(), nbytesInfo, uncompLenInfo, streamerInfo.get());
+      streamerInfo = MakeUninitArray<char>(uncompLenInfo);
+      RNTupleDecompressor::Unzip(onDisk.get(), nbytesInfo, uncompLenInfo, streamerInfo.get());
+      onDisk.reset();
    }
 
    TBufferFile buffer(TBuffer::kRead, uncompLenInfo, streamerInfo.release());
@@ -893,6 +906,9 @@ void ROOT::Internal::RMiniFileReader::LoadStreamerInfo()
       }
       lnk = lnk->Next();
    }
+
+   // Let future calls, also from other threads, know that this record has been processed
+   gProcessedStreamerInfos.Insert(hash, ROOT::Internal::RUidColl{});
 }
 
 ROOT::RResult<ROOT::RNTuple> ROOT::Internal::RMiniFileReader::GetNTupleProper(std::string_view ntuplePath)
