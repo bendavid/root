@@ -661,6 +661,16 @@ void TFile::Init(Bool_t create)
       return;
    fInitDone = kTRUE;
 
+   // Temporary read cache for fetching the key list and the streamer info together, see below
+   TFileCacheRead *structureCache = nullptr;
+   const auto releaseStructureCache = [this, &structureCache]() {
+      if (!structureCache)
+         return;
+      SetCacheRead(nullptr);
+      delete structureCache;
+      structureCache = nullptr;
+   };
+
    if (!fIsRootFile) {
       gDirectory = gROOT;
       return;
@@ -877,6 +887,18 @@ void TFile::Init(Bool_t create)
       if (gEnv->GetValue("TFile.v630forwardCompatibility", 0) == 1)
          SetBit(k630forwardCompatibility);
 
+      //*-* -------------Fetch the key list and the streamer info together
+      // Both are exactly known at this point. Reading them together saves a round trip for remote files (a single
+      // vector read), resp. lets the kernel fetch them concurrently with asynchronous reading (TFile.AsyncReading),
+      // or reads them with a single read if they are close to each other (as usual, at the end of the file).
+      if (fSeekKeys > fBEGIN && fEND <= size && fNbytesKeys > 0 && fgReadInfo && fSeekInfo > fBEGIN &&
+          fNbytesInfo > 0 && !fCacheRead && !InheritsFrom("TMemFile")) {
+         structureCache = new TFileCacheRead(this, fNbytesKeys + fNbytesInfo); // attaches itself to the file
+         structureCache->SetEnablePrefetching(kFALSE);
+         structureCache->Prefetch(fSeekKeys, fNbytesKeys);
+         structureCache->Prefetch(fSeekInfo, fNbytesInfo);
+      }
+
       //*-* -------------Read keys of the top directory
       if (fSeekKeys > fBEGIN && fEND <= size) {
          //normal case. Recover only if file has no keys
@@ -961,6 +983,8 @@ void TFile::Init(Bool_t create)
       }
    }
 
+   releaseStructureCache();
+
    // Count number of TProcessIDs in this file
    {
       TIter next(fKeys);
@@ -974,6 +998,7 @@ void TFile::Init(Bool_t create)
    return;
 
 zombie:
+   releaseStructureCache();
    if (fGlobalRegistration) {
       R__LOCKGUARD(gROOTMutex);
       gROOT->GetListOfClosedObjects()->Add(this);
