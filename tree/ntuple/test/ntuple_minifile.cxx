@@ -940,6 +940,8 @@ namespace {
 struct RReadCounters {
    unsigned fNReadAt = 0;
    unsigned fNReadV = 0;
+   /// Number of opens of the underlying file (shallow clones share the open file)
+   unsigned fNOpen = 0;
    /// The read-ahead advice given to each opened file (true: discouraged, i.e. unbuffered)
    std::vector<bool> fDiscourageReadAhead;
 };
@@ -958,10 +960,20 @@ public:
    {
       return std::make_unique<RRawFileCounting>(fInner->Clone(), fCounters);
    }
+   std::unique_ptr<RRawFile> ShallowClone() const final
+   {
+      if (!IsOpen())
+         return Clone();
+      auto clone = std::make_unique<RRawFileCounting>(fInner->ShallowClone(), fCounters);
+      clone->fOptions = fOptions;
+      InitShallowClone(*clone);
+      return clone;
+   }
 
 protected:
    void OpenImpl() final
    {
+      fCounters->fNOpen++;
       if (fOptions.fBlockSize == ROptions::kUseDefaultBlockSize)
          fOptions.fBlockSize = 4096;
    }
@@ -1089,7 +1101,10 @@ TEST(MiniFile, ClonedPageSourceVectorReads)
       "ntpl", std::make_unique<RRawFileCounting>(RRawFile::Create(fileGuard.GetPath()), counters),
       ROOT::RNTupleReadOptions());
    source->Attach();
-   // The clone of an attached source copies the descriptor rather than reading the meta-data again
+   EXPECT_EQ(1u, counters->fNOpen);
+   const auto nAdviceBefore = counters->fDiscourageReadAhead.size();
+   // The clone of an attached source copies the descriptor rather than reading the meta-data again, and it shares the
+   // open file
    auto clone = source->Clone();
 
    // Load the pages of the columns of fields a and c; the pages of field big in between are not coalesced with
@@ -1110,7 +1125,18 @@ TEST(MiniFile, ClonedPageSourceVectorReads)
    // The pages are read with a vector read; there may be one single read for the page list.
    EXPECT_EQ(1u, counters->fNReadV - nReadVBefore);
    EXPECT_LE(counters->fNReadAt - nReadAtBefore, 1u);
-   // The cloned raw file is unbuffered, i.e. it got the read-ahead advice for unbuffered reads
+   // The file was not opened again for the clone, and the shared file has the read-ahead advice for unbuffered reads,
+   // which is not applied again by the clone
+   EXPECT_EQ(1u, counters->fNOpen);
+   EXPECT_EQ(nAdviceBefore, counters->fDiscourageReadAhead.size());
    ASSERT_FALSE(counters->fDiscourageReadAhead.empty());
    EXPECT_TRUE(counters->fDiscourageReadAhead.back());
+
+   // The clone can be used after the original source is gone
+   source.reset();
+   const auto nReadVAfter = counters->fNReadV;
+   auto clusters2 = clone->LoadClusters(keys);
+   ASSERT_EQ(1u, clusters2.size());
+   EXPECT_EQ(1u, counters->fNReadV - nReadVAfter);
+   EXPECT_EQ(1u, counters->fNOpen);
 }

@@ -523,11 +523,16 @@ void ROOT::Internal::RPageSourceFile::LoadSealedPageImpl(const RNTupleLocator &l
 std::unique_ptr<ROOT::Internal::RPageSource> ROOT::Internal::RPageSourceFile::CloneImpl() const
 {
    auto clone = new RPageSourceFile(fNTupleName, fOptions);
-   clone->fFile = fFile->Clone();
+   // Share the open file handle if possible (no new open, i.e. no round trips for remote files). Page reads of the
+   // clones go to the shared handle concurrently; RRawFile supports that for shallow clones.
+   clone->fFile = fFile->ShallowClone();
    // A clone of an attached source does not go through LoadStructureImpl() and AttachImpl(), so it needs to inherit
    // the buffering mode (unbuffered page reads, including the corresponding OS read-ahead advice) and the max key
    // size. Without the latter, LoadClusters() limits the vector read element size to 0 and reads every request singly.
-   clone->fFile->SetBuffering(fFile->IsBuffering());
+   // A shallow clone has the buffering mode of the original already; it must not be set again, since that would apply
+   // the read-ahead advice to the shared handle, concurrently with reads of other clones.
+   if (clone->fFile->IsBuffering() != fFile->IsBuffering())
+      clone->fFile->SetBuffering(fFile->IsBuffering());
    clone->fReader = ROOT::Internal::RMiniFileReader(clone->fFile.get());
    clone->fReader.SetMaxKeySize(fReader.GetMaxKeySize());
    return std::unique_ptr<RPageSourceFile>(clone);
