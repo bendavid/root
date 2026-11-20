@@ -1,5 +1,6 @@
 #include "ntuple_test.hxx"
 #include <Byteswap.h>
+#include <ROOT/RPageStorageFile.hxx>
 #include <TKey.h>
 #include <TTree.h>
 #include <TUUID.h>
@@ -9,6 +10,8 @@
 #include <TFree.h>
 
 #include <cstring>
+#include <memory>
+#include <random>
 
 using ROOT::Internal::RNTupleWriteOptionsManip;
 
@@ -978,4 +981,182 @@ TEST(MiniFile, InvalidAnchor)
    } catch (const ROOT::RException &e) {
       EXPECT_THAT(e.what(), testing::HasSubstr("Invalid size and length combination of anchor"));
    }
+}
+namespace {
+struct RReadCounters {
+   unsigned fNReadAt = 0;
+   unsigned fNReadV = 0;
+   /// The read-ahead advice given to each opened file (true: discouraged, i.e. unbuffered)
+   std::vector<bool> fDiscourageReadAhead;
+};
+
+/// Raw file wrapper counting the read requests that reach the underlying file
+class RRawFileCounting : public ROOT::Internal::RRawFile {
+   std::unique_ptr<ROOT::Internal::RRawFile> fInner;
+   std::shared_ptr<RReadCounters> fCounters;
+
+public:
+   RRawFileCounting(std::unique_ptr<ROOT::Internal::RRawFile> inner, std::shared_ptr<RReadCounters> counters)
+      : RRawFile(inner->GetUrl(), ROptions()), fInner(std::move(inner)), fCounters(std::move(counters))
+   {
+   }
+   std::unique_ptr<RRawFile> Clone() const final
+   {
+      return std::make_unique<RRawFileCounting>(fInner->Clone(), fCounters);
+   }
+
+protected:
+   void OpenImpl() final
+   {
+      if (fOptions.fBlockSize == ROptions::kUseDefaultBlockSize)
+         fOptions.fBlockSize = 4096;
+   }
+   size_t ReadAtImpl(void *buffer, size_t nbytes, std::uint64_t offset) final
+   {
+      fCounters->fNReadAt++;
+      return fInner->ReadAt(buffer, nbytes, offset);
+   }
+   void ReadVImpl(RIOVec *ioVec, unsigned int nReq) final
+   {
+      fCounters->fNReadV++;
+      fInner->ReadV(ioVec, nReq);
+   }
+   std::uint64_t GetSizeImpl() final { return fInner->GetSize(); }
+   void SetDiscourageReadAheadImpl(bool value) final { fCounters->fDiscourageReadAhead.push_back(value); }
+};
+
+/// Writes an RNTuple with fields a, big, c and incompressible content, such that the file is larger than the
+/// speculative reads at the beginning and the end of the file when it is opened
+void WriteFewReadsTestNTuple(std::unique_ptr<ROOT::RNTupleWriter> writer, ROOT::RNTupleModel &model)
+{
+   auto a = model.GetDefaultEntry().GetPtr<float>("a");
+   auto big = model.GetDefaultEntry().GetPtr<std::vector<float>>("big");
+   auto c = model.GetDefaultEntry().GetPtr<float>("c");
+   std::mt19937 gen(42);
+   std::uniform_real_distribution<float> dist;
+   for (int i = 0; i < 5000; ++i) {
+      *a = dist(gen);
+      big->resize(50);
+      for (auto &x : *big)
+         x = dist(gen);
+      *c = dist(gen);
+      writer->Fill();
+   }
+}
+
+std::unique_ptr<ROOT::RNTupleModel> CreateFewReadsTestModel()
+{
+   auto model = ROOT::RNTupleModel::Create();
+   model->MakeField<float>("a");
+   model->MakeField<std::vector<float>>("big");
+   model->MakeField<float>("c");
+   return model;
+}
+} // anonymous namespace
+
+TEST(MiniFile, FewReadsAtOpen)
+{
+   FileRaii fileGuard("test_ntuple_minifile_few_reads.root");
+   {
+      auto model = CreateFewReadsTestModel();
+      auto &modelRef = *model;
+      auto writer = ROOT::RNTupleWriter::Recreate(std::move(model), "ntpl", fileGuard.GetPath());
+      WriteFewReadsTestNTuple(std::move(writer), modelRef);
+   }
+
+   auto counters = std::make_shared<RReadCounters>();
+   RRawFileCounting rawFile(RRawFile::Create(fileGuard.GetPath()), counters);
+   ASSERT_GT(rawFile.GetSize(), 4 * 64 * 1024u);
+   rawFile.SetBuffering(false);
+   RMiniFileReader reader(&rawFile);
+   auto anchor = reader.GetNTuple("ntpl").Unwrap();
+   reader.LoadStreamerInfo();
+   reader.SetMaxKeySize(anchor.GetMaxKeySize());
+   reader.PrefetchMetadata(anchor);
+   std::vector<unsigned char> header(anchor.GetNBytesHeader());
+   std::vector<unsigned char> footer(anchor.GetNBytesFooter());
+   reader.ReadBuffer(header.data(), header.size(), anchor.GetSeekHeader());
+   reader.ReadBuffer(footer.data(), footer.size(), anchor.GetSeekFooter());
+   // The beginning and the end of the file, read with a single vector read, contain all the file structures
+   EXPECT_EQ(0u, counters->fNReadAt);
+   EXPECT_EQ(1u, counters->fNReadV);
+
+   // The data served from the cache is the one in the file
+   auto direct = RRawFile::Create(fileGuard.GetPath());
+   std::vector<unsigned char> headerDirect(header.size());
+   std::vector<unsigned char> footerDirect(footer.size());
+   direct->ReadAt(headerDirect.data(), headerDirect.size(), anchor.GetSeekHeader());
+   direct->ReadAt(footerDirect.data(), footerDirect.size(), anchor.GetSeekFooter());
+   EXPECT_EQ(headerDirect, header);
+   EXPECT_EQ(footerDirect, footer);
+}
+
+TEST(MiniFile, FewReadsAtOpenSubdirectory)
+{
+   FileRaii fileGuard("test_ntuple_minifile_few_reads_subdir.root");
+   {
+      std::unique_ptr<TFile> file(TFile::Open(fileGuard.GetPath().c_str(), "RECREATE"));
+      auto dir = file->mkdir("foo")->mkdir("bar");
+      auto model = CreateFewReadsTestModel();
+      auto &modelRef = *model;
+      auto writer = ROOT::RNTupleWriter::Append(std::move(model), "ntpl", *dir);
+      WriteFewReadsTestNTuple(std::move(writer), modelRef);
+      file->Close();
+   }
+
+   auto counters = std::make_shared<RReadCounters>();
+   RRawFileCounting rawFile(RRawFile::Create(fileGuard.GetPath()), counters);
+   ASSERT_GT(rawFile.GetSize(), 4 * 64 * 1024u);
+   rawFile.SetBuffering(false);
+   RMiniFileReader reader(&rawFile);
+   auto anchor = reader.GetNTuple("foo/bar/ntpl").Unwrap();
+   reader.LoadStreamerInfo();
+   EXPECT_LE(counters->fNReadAt + counters->fNReadV, 2u);
+
+   auto directFile = RRawFile::Create(fileGuard.GetPath());
+   RMiniFileReader directReader(directFile.get());
+   auto directAnchor = directReader.GetNTuple("foo/bar/ntpl").Unwrap();
+   EXPECT_EQ(directAnchor.GetSeekHeader(), anchor.GetSeekHeader());
+   EXPECT_EQ(directAnchor.GetSeekFooter(), anchor.GetSeekFooter());
+}
+
+TEST(MiniFile, ClonedPageSourceVectorReads)
+{
+   FileRaii fileGuard("test_ntuple_minifile_clone_reads.root");
+   {
+      auto model = CreateFewReadsTestModel();
+      auto &modelRef = *model;
+      auto writer = ROOT::RNTupleWriter::Recreate(std::move(model), "ntpl", fileGuard.GetPath());
+      WriteFewReadsTestNTuple(std::move(writer), modelRef);
+   }
+
+   auto counters = std::make_shared<RReadCounters>();
+   auto source = std::make_unique<ROOT::Internal::RPageSourceFile>(
+      "ntpl", std::make_unique<RRawFileCounting>(RRawFile::Create(fileGuard.GetPath()), counters),
+      ROOT::RNTupleReadOptions());
+   source->Attach();
+   // The clone of an attached source copies the descriptor rather than reading the meta-data again
+   auto clone = source->Clone();
+
+   // Load the pages of the columns of fields a and c; the pages of field big in between are not coalesced with
+   // them, so that the cluster is read with (at least) two requests.
+   ROOT::Internal::RCluster::ColumnSet_t columns;
+   {
+      auto descGuard = clone->GetSharedDescriptorGuard();
+      for (const auto *name : {"a", "c"}) {
+         for (const auto &col : descGuard->GetColumnIterable(descGuard->FindFieldId(name)))
+            columns.insert(col.GetPhysicalId());
+      }
+   }
+   const auto nReadAtBefore = counters->fNReadAt;
+   const auto nReadVBefore = counters->fNReadV;
+   std::vector<ROOT::Internal::RCluster::RKey> keys{{0, columns}};
+   auto clusters = clone->LoadClusters(keys);
+   ASSERT_EQ(1u, clusters.size());
+   // The pages are read with a vector read; there may be one single read for the page list.
+   EXPECT_EQ(1u, counters->fNReadV - nReadVBefore);
+   EXPECT_LE(counters->fNReadAt - nReadAtBefore, 1u);
+   // The cloned raw file is unbuffered, i.e. it got the read-ahead advice for unbuffered reads
+   ASSERT_FALSE(counters->fDiscourageReadAhead.empty());
+   EXPECT_TRUE(counters->fDiscourageReadAhead.back());
 }
