@@ -294,3 +294,30 @@ TEST(RRawFile, Readahead)
       EXPECT_FALSE(mock.fDiscourageReadAhead);
    }
 }
+
+TEST(RRawFile, ReadVBypassesBuffer)
+{
+   // Vector reads are served directly, also if buffering is on: they neither read full blocks nor fill the buffer
+   RRawFile::ROptions options;
+   options.fBlockSize = 4;
+   RRawFileMock mock("abcdefghijklmnop", options);
+   ASSERT_TRUE(mock.IsBuffering());
+
+   char buf1[2];
+   char buf2[2];
+   RRawFile::RIOVec iovec[2];
+   iovec[0] = {buf1, 1, 2, 0};
+   iovec[1] = {buf2, 10, 2, 0};
+   mock.ReadV(iovec, 2);
+   EXPECT_EQ(2u, mock.fNumReadAt);
+   EXPECT_EQ(2u, iovec[0].fOutBytes);
+   EXPECT_EQ(2u, iovec[1].fOutBytes);
+   EXPECT_EQ(std::string("bc"), std::string(buf1, 2));
+   EXPECT_EQ(std::string("kl"), std::string(buf2, 2));
+
+   // The block buffer was not filled by the vector read
+   char c;
+   EXPECT_EQ(1u, mock.ReadAt(&c, 1, 1));
+   EXPECT_EQ('b', c);
+   EXPECT_EQ(3u, mock.fNumReadAt);
+}
