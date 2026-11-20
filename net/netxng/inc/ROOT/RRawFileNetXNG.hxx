@@ -32,7 +32,7 @@ larger chunks than the default for local files, assuming that remote file access
 class RRawFileNetXNG : public RRawFile
 {
 private:
-   std::unique_ptr<RRawFileNetXNGImpl> pImpl; ///< pointer to implementation
+   std::shared_ptr<RRawFileNetXNGImpl> pImpl; ///< pointer to implementation, shared with shallow clones
    std::optional<RIOVecLimits> fIOVecLimits;  ///< Set by GetReadVLimits and then cached
 
 protected:
@@ -45,6 +45,7 @@ public:
    RRawFileNetXNG(std::string_view url, RRawFile::ROptions options);
    ~RRawFileNetXNG();
    std::unique_ptr<RRawFile> Clone() const final;
+   std::unique_ptr<RRawFile> ShallowClone() const final;
    RIOVecLimits GetReadVLimits() final;
 };
 

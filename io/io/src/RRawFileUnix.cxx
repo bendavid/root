@@ -56,6 +56,21 @@ std::unique_ptr<ROOT::Internal::RRawFile> ROOT::Internal::RRawFileUnix::Clone() 
    return std::make_unique<RRawFileUnix>(fUrl, fOptions);
 }
 
+std::unique_ptr<ROOT::Internal::RRawFile> ROOT::Internal::RRawFileUnix::ShallowClone() const
+{
+   if (!IsOpen())
+      return Clone();
+   // A duplicated file descriptor refers to the same open file description: there is no path lookup or open on the
+   // file system, and the read-ahead advice is shared. pread() does not use the shared file offset.
+   const int fd = dup(fFileDes);
+   if (fd < 0)
+      return Clone();
+   auto clone = std::make_unique<RRawFileUnix>(fUrl, fOptions);
+   clone->fFileDes = fd;
+   InitShallowClone(*clone);
+   return clone;
+}
+
 std::uint64_t ROOT::Internal::RRawFileUnix::GetSizeImpl()
 {
 #ifdef R__SEEK64
