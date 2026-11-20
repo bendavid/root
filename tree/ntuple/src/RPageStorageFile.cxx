@@ -671,8 +671,37 @@ ROOT::Internal::RPageSourceFile::LoadClusters(std::span<RCluster::RKey> clusterK
       clusters.emplace_back(PrepareSingleCluster(key, readRequests));
    }
 
-   auto nReqs = readRequests.size();
    auto readvLimits = fFile->GetReadVLimits();
+   // Requests larger than the backend's limit for a vector read element (e.g. readv_ior_max = 2 MiB for XRootD) are
+   // contiguous unless they belong to a chunked blob (> max key size): split them into pieces within the limit, so
+   // that they can be part of a vector read rather than breaking up the batches into separate single reads.
+   if (readvLimits.fMaxSingleSize != static_cast<std::size_t>(-1)) {
+      const std::size_t maxPiece = readvLimits.fMaxSingleSize;
+      const std::uint64_t maxKeySize = fReader.GetMaxKeySize();
+      const auto isSplittable = [&](const ROOT::Internal::RRawFile::RIOVec &req) {
+         return req.fSize > maxPiece && (maxKeySize == 0 || req.fSize <= maxKeySize);
+      };
+      if (std::any_of(readRequests.begin(), readRequests.end(), isSplittable)) {
+         std::vector<ROOT::Internal::RRawFile::RIOVec> split;
+         split.reserve(readRequests.size());
+         for (const auto &req : readRequests) {
+            if (!isSplittable(req)) {
+               split.emplace_back(req);
+               continue;
+            }
+            for (std::size_t done = 0; done < req.fSize; done += maxPiece) {
+               ROOT::Internal::RRawFile::RIOVec piece;
+               piece.fBuffer = reinterpret_cast<unsigned char *>(req.fBuffer) + done;
+               piece.fOffset = req.fOffset + done;
+               piece.fSize = std::min(maxPiece, req.fSize - done);
+               split.emplace_back(piece);
+            }
+         }
+         readRequests.swap(split);
+      }
+   }
+
+   auto nReqs = readRequests.size();
    // We never want to do vectorized reads of split blobs, so we limit our single size to maxKeySize (if known).
    if (fReader.GetMaxKeySize() > 0)
       readvLimits.fMaxSingleSize = std::min<size_t>(readvLimits.fMaxSingleSize, fReader.GetMaxKeySize());
