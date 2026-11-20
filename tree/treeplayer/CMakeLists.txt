@@ -18,7 +18,7 @@ if(NOT MSVC)
 endif()
 
 if(imt)
-  list(APPEND TREEPLAYER_EXTRA_HEADERS ROOT/TTreeProcessorMT.hxx)
+  list(APPEND TREEPLAYER_EXTRA_HEADERS ROOT/RFileTaskScheduler.hxx ROOT/TTreeProcessorMT.hxx)
   list(APPEND TREEPLAYER_EXTRA_DEPENDENCIES Imt)
 endif()
 
