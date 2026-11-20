@@ -24,7 +24,9 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <variant>
+#include <vector>
 
 class TDirectory;
 class TFileMergeInfo;
@@ -67,6 +69,19 @@ private:
    std::uint64_t fSeekKeyInfo = 0;
    std::uint64_t fNbytesKeyAndInfo = 0;
 
+   /// A byte range of the file read ahead of being parsed, see CacheRanges()
+   struct RCachedRange {
+      std::uint64_t fOffset = 0;
+      std::vector<unsigned char> fData;
+   };
+   /// File structures (TFile records, RNTuple anchor, header, footer, page list) read ahead with as few requests as
+   /// possible when the file is opened. The many small reads that parse these structures are served from here.
+   std::vector<RCachedRange> fCachedRanges;
+
+   /// Copies the given byte range from the cached ranges if it is fully contained in one of them. If buffer is
+   /// nullptr, only checks whether it is.
+   bool ReadFromCache(void *buffer, std::size_t nbytes, std::uint64_t offset) const;
+
    /// Used when the file container turns out to be a bare file
    RResult<RNTuple> GetNTupleBare(std::string_view ntupleName);
    /// Used when the file turns out to be a TFile container. The ntuplePath variable is either the ntuple name
@@ -76,8 +91,10 @@ private:
    /// Searches for a key with the given name and type in the key index of the directory starting at offsetDir.
    /// The offset points to the start of the TDirectory DATA section, without the key and without the name and title
    /// of the TFile record (the root directory).
-   /// Return 0 if the key was not found. Otherwise returns the offset of found key.
-   std::uint64_t SearchInDirectory(std::uint64_t &offsetDir, std::string_view keyName, std::string_view typeName);
+   /// Return 0 if the key was not found. Otherwise returns the offset of found key and, if nbytesKey is given, sets it
+   /// to the size of the key including its payload.
+   std::uint64_t SearchInDirectory(std::uint64_t &offsetDir, std::string_view keyName, std::string_view typeName,
+                                   std::uint32_t *nbytesKey = nullptr);
 
 public:
    RMiniFileReader() = default;
@@ -97,6 +114,17 @@ public:
    ROOT::RResult<void> TryReadBuffer(void *buffer, size_t nbytes, std::uint64_t offset);
    /// Load the streamer info from the file into the global list of streamer infos
    void LoadStreamerInfo();
+
+   /// Reads the given byte ranges (offset, size) into the cache of file structures, with a single vector read where
+   /// possible. Ranges are clipped to fileEnd if it is known (> 0); ranges that are already cached or contained in
+   /// another given range are skipped. Without a known file end, only a single range may extend beyond the end of the
+   /// file (it is read with a plain read).
+   void CacheRanges(std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges, std::uint64_t fileEnd = 0);
+   /// Reads the RNTuple header and footer given by the anchor into the cache (if not cached yet), together with
+   /// the bytes preceding the footer, which typically contain the page list of the last cluster group
+   void PrefetchMetadata(const RNTuple &anchor);
+   /// Drops the cached file structures (once the RNTuple meta-data has been read)
+   void ClearCache() { fCachedRanges.clear(); }
 
    std::uint64_t GetMaxKeySize() const { return fMaxKeySize; }
    /// If the reader is not used to retrieve the anchor, we need to set the max key size manually

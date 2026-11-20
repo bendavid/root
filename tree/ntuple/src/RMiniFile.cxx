@@ -40,6 +40,8 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 #include <chrono>
 
 #ifdef R__LINUX
@@ -373,6 +375,13 @@ struct RTFHeader {
       }
    }
 
+   std::uint32_t GetNbytesName() const
+   {
+      if (IsBigFile())
+         return fInfoLong.fNbytesName;
+      return fInfoShort.fNbytesName;
+   }
+
    void SetNbytesName(std::uint32_t value)
    {
       if (IsBigFile()) {
@@ -666,8 +675,130 @@ static size_t ComputeNumChunks(size_t nbytes, size_t maxChunkSize)
 
 ROOT::Internal::RMiniFileReader::RMiniFileReader(ROOT::Internal::RRawFile *rawFile) : fRawFile(rawFile) {}
 
+namespace {
+/// Size of the speculative reads of the beginning and of the end of the file when locating the RNTuple anchor.
+/// The beginning of a TFile container holds the TFile header, the top-level directory record and, for files written
+/// by the RNTuple writer, the RNTuple header (~7 B per field compressed, e.g. 25 kB for a NanoAOD with 1800 branches).
+/// The end of the file holds, in this order, the page list of the last cluster group, the RNTuple footer, the RNTuple
+/// key and anchor, the key list, the streamer info, and the list of free segments. Structures not contained in these
+/// windows are read separately with their exact size, so the window sizes only affect the number of read requests.
+constexpr std::uint64_t kSpeculativeReadSize = 64 * 1024;
+} // anonymous namespace
+
+bool ROOT::Internal::RMiniFileReader::ReadFromCache(void *buffer, std::size_t nbytes, std::uint64_t offset) const
+{
+   for (const auto &range : fCachedRanges) {
+      if (offset >= range.fOffset && offset + nbytes <= range.fOffset + range.fData.size()) {
+         if (buffer)
+            memcpy(buffer, range.fData.data() + (offset - range.fOffset), nbytes);
+         return true;
+      }
+   }
+   return false;
+}
+
+void ROOT::Internal::RMiniFileReader::CacheRanges(std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges,
+                                                  std::uint64_t fileEnd)
+{
+   if (fileEnd > 0) {
+      for (auto &r : ranges) {
+         if (r.first >= fileEnd)
+            r.second = 0;
+         else
+            r.second = std::min(r.second, fileEnd - r.first);
+      }
+   }
+
+   // Determine the ranges that need to be read: skip empty and cached ranges and ranges contained in another one
+   std::vector<std::pair<std::uint64_t, std::uint64_t>> todo;
+   for (std::size_t i = 0; i < ranges.size(); ++i) {
+      const auto [offset, nbytes] = ranges[i];
+      if (nbytes == 0 || ReadFromCache(nullptr, nbytes, offset))
+         continue;
+      bool contained = false;
+      for (std::size_t j = 0; j < ranges.size() && !contained; ++j) {
+         const auto [otherOffset, otherNbytes] = ranges[j];
+         if (j == i || otherNbytes == 0 || offset < otherOffset || offset + nbytes > otherOffset + otherNbytes)
+            continue;
+         // of two identical ranges, keep the first one
+         contained = (otherNbytes != nbytes || otherOffset != offset || j < i);
+      }
+      if (!contained)
+         todo.emplace_back(offset, nbytes);
+   }
+   if (todo.empty())
+      return;
+
+   const auto firstNew = fCachedRanges.size();
+   for (const auto [offset, nbytes] : todo) {
+      RCachedRange range;
+      range.fOffset = offset;
+      range.fData.resize(nbytes);
+      fCachedRanges.emplace_back(std::move(range));
+   }
+
+   if (todo.size() == 1) {
+      // A single range is read with a plain read, which also handles a range extending beyond the end of the file
+      auto &range = fCachedRanges[firstNew];
+      range.fData.resize(fRawFile->ReadAt(range.fData.data(), range.fData.size(), range.fOffset));
+      return;
+   }
+
+   std::vector<ROOT::Internal::RRawFile::RIOVec> ioVec;
+   for (auto i = firstNew; i < fCachedRanges.size(); ++i) {
+      ioVec.push_back({fCachedRanges[i].fData.data(), fCachedRanges[i].fOffset, fCachedRanges[i].fData.size(), 0});
+   }
+   const auto limits = fRawFile->GetReadVLimits();
+   std::size_t i = 0;
+   while (i < ioVec.size()) {
+      std::size_t n = 0;
+      std::uint64_t totalSize = 0;
+      while ((i + n < ioVec.size()) && (n < limits.fMaxReqs) && (ioVec[i + n].fSize <= limits.fMaxSingleSize) &&
+             (totalSize + ioVec[i + n].fSize <= limits.fMaxTotalSize)) {
+         totalSize += ioVec[i + n].fSize;
+         ++n;
+      }
+      if (n <= 1) {
+         ioVec[i].fOutBytes = fRawFile->ReadAt(ioVec[i].fBuffer, ioVec[i].fSize, ioVec[i].fOffset);
+         n = 1;
+      } else {
+         fRawFile->ReadV(&ioVec[i], n);
+      }
+      i += n;
+   }
+   for (std::size_t k = 0; k < ioVec.size(); ++k)
+      fCachedRanges[firstNew + k].fData.resize(ioVec[k].fOutBytes);
+}
+
+void ROOT::Internal::RMiniFileReader::PrefetchMetadata(const RNTuple &anchor)
+{
+   const auto maxKeySize = anchor.GetMaxKeySize();
+   std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
+   // Chunked blobs (larger than the max key size) are not contiguous and are not read through the cache
+   if (maxKeySize == 0 || anchor.GetNBytesHeader() <= maxKeySize)
+      ranges.emplace_back(anchor.GetSeekHeader(), anchor.GetNBytesHeader());
+   if ((maxKeySize == 0 || anchor.GetNBytesFooter() <= maxKeySize) &&
+       !ReadFromCache(nullptr, anchor.GetNBytesFooter(), anchor.GetSeekFooter())) {
+      // The page list of the last cluster group is typically written right before the footer. (If the footer is
+      // already cached, e.g. from the read of the end of the file, so is typically the page list.)
+      const auto start = anchor.GetSeekFooter() > kSpeculativeReadSize ? anchor.GetSeekFooter() - kSpeculativeReadSize : 0;
+      ranges.emplace_back(start, anchor.GetSeekFooter() + anchor.GetNBytesFooter() - start);
+   }
+   CacheRanges(std::move(ranges));
+}
+
 ROOT::RResult<ROOT::RNTuple> ROOT::Internal::RMiniFileReader::GetNTuple(std::string_view ntupleName)
 {
+   // Read the beginning and the end of the file speculatively, in a single request. The beginning contains the file
+   // header, and, for TFile containers, the top-level directory record (and typically the RNTuple header), resp. for
+   // bare files the anchor. The end typically contains the key list, the streamer info, the RNTuple key and anchor,
+   // the RNTuple footer, and the page list of the last cluster group (see GetNTupleProper()).
+   const std::uint64_t fileSize = fRawFile->GetSize();
+   if (fileSize <= 2 * kSpeculativeReadSize) {
+      CacheRanges({{0, fileSize}}, fileSize);
+   } else {
+      CacheRanges({{0, kSpeculativeReadSize}, {fileSize - kSpeculativeReadSize, kSpeculativeReadSize}}, fileSize);
+   }
    char ident[4];
    ReadBuffer(ident, 4, 0);
    if (std::string(ident, 4) == "root")
@@ -679,7 +810,7 @@ ROOT::RResult<ROOT::RNTuple> ROOT::Internal::RMiniFileReader::GetNTuple(std::str
 /// Searches for a key with the given name and type in the key index of the given directory.
 /// Return 0 if the key was not found.
 std::uint64_t ROOT::Internal::RMiniFileReader::SearchInDirectory(std::uint64_t &offsetDir, std::string_view keyName,
-                                                                 std::string_view typeName)
+                                                                 std::string_view typeName, std::uint32_t *nbytesKey)
 {
    RTFDirectory directory;
    ReadBuffer(&directory, sizeof(directory), offsetDir);
@@ -687,6 +818,8 @@ std::uint64_t ROOT::Internal::RMiniFileReader::SearchInDirectory(std::uint64_t &
    RTFKey key;
    RUInt32BE nKeys;
    std::uint64_t offset = directory.GetSeekKeys();
+   // The size of the entire key list is known from the directory record: read it at once (unless already cached)
+   CacheRanges({{offset, directory.fNBytesKeys}});
    ReadBuffer(&key, sizeof(key), offset);
    offset += key.fKeyLen;
    ReadBuffer(&nKeys, sizeof(nKeys), offset);
@@ -708,6 +841,8 @@ std::uint64_t ROOT::Internal::RMiniFileReader::SearchInDirectory(std::uint64_t &
       ReadBuffer(&name, 1, offset);
       ReadBuffer(&name, name.GetSize(), offset);
       if (std::string_view(name.fData, name.fLName) == keyName) {
+         if (nbytesKey)
+            *nbytesKey = key.GetSize();
          return key.GetSeekKey();
       }
       offset = offsetNextKey;
@@ -779,6 +914,22 @@ ROOT::RResult<ROOT::RNTuple> ROOT::Internal::RMiniFileReader::GetNTupleProper(st
    ReadBuffer(&name, 1, offset);
    offset += name.GetSize();
 
+   // The top-level directory record (typically already cached) gives the exact location of the key list, the file
+   // header the one of the streamer info. Read both together with the end of the file, which typically contains them
+   // together with the RNTuple key and anchor, the RNTuple footer, and the page list of the last cluster group.
+   {
+      RTFDirectory directory;
+      ReadBuffer(&directory, sizeof(directory), offset);
+      const std::uint64_t fileEnd = fileHeader.GetEnd();
+      std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges{{directory.GetSeekKeys(), directory.fNBytesKeys},
+                                                                  {fSeekKeyInfo, fNbytesKeyAndInfo}};
+      if (fileEnd > 0) {
+         const auto tailStart = fileEnd > kSpeculativeReadSize ? fileEnd - kSpeculativeReadSize : 0;
+         ranges.emplace_back(tailStart, fileEnd - tailStart);
+      }
+      CacheRanges(std::move(ranges), fileEnd);
+   }
+
    // split ntupleName by '/' character to open datasets in subdirectories.
    std::string ntuplePathTail(ntuplePath);
    if (!ntuplePathTail.empty() && ntuplePathTail[0] == '/')
@@ -788,21 +939,27 @@ ROOT::RResult<ROOT::RNTuple> ROOT::Internal::RMiniFileReader::GetNTupleProper(st
       auto directoryName = ntuplePathTail.substr(0, pos);
       ntuplePathTail.erase(0, pos + 1);
 
-      offset = SearchInDirectory(offset, directoryName, "TDirectory");
+      std::uint32_t nbytesDirKey = 0;
+      offset = SearchInDirectory(offset, directoryName, "TDirectory", &nbytesDirKey);
       if (offset == 0) {
          return R__FAIL("no directory named '" + std::string(directoryName) + "' in file '" + fRawFile->GetUrl() + "'");
       }
+      // The directory key including its directory record (unless already cached)
+      CacheRanges({{offset, nbytesDirKey}});
       ReadBuffer(&key, sizeof(key), offset);
       offset = key.GetSeekKey() + key.fKeyLen;
    }
    // no more '/' delimiter in ntuplePath
    auto ntupleName = ntuplePathTail;
 
-   offset = SearchInDirectory(offset, ntupleName, kNTupleClassName);
+   std::uint32_t nbytesKey = 0;
+   offset = SearchInDirectory(offset, ntupleName, kNTupleClassName, &nbytesKey);
    if (offset == 0) {
       return R__FAIL("no RNTuple named '" + std::string(ntupleName) + "' in file '" + fRawFile->GetUrl() + "'");
    }
 
+   // The RNTuple key including the anchor (unless already cached)
+   CacheRanges({{offset, nbytesKey}});
    ReadBuffer(&key, sizeof(key), offset);
    offset = key.GetSeekKey() + key.fKeyLen;
 
@@ -901,6 +1058,9 @@ ROOT::RResult<void> ROOT::Internal::RMiniFileReader::TryReadBuffer(void *buffer,
       return R__FAIL("invalid read (expected bytes: " + std::to_string(expected) + ", read: " + std::to_string(nread) +
                      ")");
    };
+
+   if (!fCachedRanges.empty() && (fMaxKeySize == 0 || nbytes <= fMaxKeySize) && ReadFromCache(buffer, nbytes, offset))
+      return RResult<void>::Success();
 
    size_t nread;
    if (fMaxKeySize == 0 || nbytes <= fMaxKeySize) {

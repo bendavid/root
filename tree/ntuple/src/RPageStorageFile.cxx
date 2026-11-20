@@ -317,8 +317,8 @@ ROOT::Internal::RPageSourceFile::RPageSourceFile(std::string_view ntupleName, co
       *fMetrics.MakeCounter<RNTupleCalcPerf *>(
          "szFile", "B", "total file size", fMetrics,
          [this](const RNTupleMetrics &) -> std::pair<bool, double> {
-            if (fFileSize > 0)
-               return {true, static_cast<double>(fFileSize)};
+            if (const auto fileSize = GetFileSizeForMetrics(); fileSize > 0)
+               return {true, static_cast<double>(fileSize)};
             return {false, -1.};
          }),
       *fMetrics.MakeCounter<RNTupleCalcPerf *>(
@@ -341,11 +341,11 @@ ROOT::Internal::RPageSourceFile::RPageSourceFile(std::string_view ntupleName, co
          "sparseness", "",
          "ratio of bytes read to total file size (excluding file structure reads)", fMetrics,
          [this](const RNTupleMetrics &metrics) -> std::pair<bool, double> {
-            if (fFileSize > 0) {
+            if (const auto fileSize = GetFileSizeForMetrics(); fileSize > 0) {
                if (const auto szReadPayload = metrics.GetLocalCounter("szReadPayload")) {
                   if (const auto szReadOverhead = metrics.GetLocalCounter("szReadOverhead")) {
                      auto totalRead = szReadPayload->GetValueAsInt() + szReadOverhead->GetValueAsInt();
-                     return {true, (1. * totalRead) / fFileSize};
+                     return {true, (1. * totalRead) / fileSize};
                   }
                }
             }
@@ -360,6 +360,10 @@ ROOT::Internal::RPageSourceFile::RPageSourceFile(std::string_view ntupleName,
 {
    fFile = std::move(file);
    R__ASSERT(fFile);
+   // All reads have known sizes: the file structures are read by RMiniFileReader in as few requests as possible, and
+   // the RNTuple meta-data and pages with exactly sized (vector) reads. Turning off buffering before the file is opened
+   // also gives the OS read-ahead advice for unbuffered reads (POSIX_FADV_RANDOM) from the first read on.
+   fFile->SetBuffering(false);
    fReader = ROOT::Internal::RMiniFileReader(fFile.get());
 }
 
@@ -440,27 +444,14 @@ void ROOT::Internal::RPageSourceFile::LoadStructureImpl()
    fStructureBuffer.fPtrHeader = fStructureBuffer.fBuffer.get();
    fStructureBuffer.fPtrFooter = fStructureBuffer.fBuffer.get() + fAnchor->GetNBytesHeader();
 
-   auto readvLimits = fFile->GetReadVLimits();
-   // Never try to vectorize reads to a split key
-   readvLimits.fMaxSingleSize = std::min<size_t>(readvLimits.fMaxSingleSize, fAnchor->GetMaxKeySize());
-
-   if ((readvLimits.fMaxReqs < 2) ||
-       (std::max(fAnchor->GetNBytesHeader(), fAnchor->GetNBytesFooter()) > readvLimits.fMaxSingleSize) ||
-       (fAnchor->GetNBytesHeader() + fAnchor->GetNBytesFooter() > readvLimits.fMaxTotalSize)) {
+   {
       RNTupleAtomicTimer timer(fCounters->fTimeWallRead, fCounters->fTimeCpuRead);
+      // Header and footer (and speculatively the page list preceding the footer) with a single vector read, unless
+      // they were already read together with the TFile structures while locating the anchor
+      fReader.PrefetchMetadata(*fAnchor);
       fReader.ReadBuffer(fStructureBuffer.fPtrHeader, fAnchor->GetNBytesHeader(), fAnchor->GetSeekHeader());
       fReader.ReadBuffer(fStructureBuffer.fPtrFooter, fAnchor->GetNBytesFooter(), fAnchor->GetSeekFooter());
       fCounters->fNRead.Add(2);
-   } else {
-      RNTupleAtomicTimer timer(fCounters->fTimeWallRead, fCounters->fTimeCpuRead);
-      R__ASSERT(fAnchor->GetNBytesHeader() < std::numeric_limits<std::size_t>::max());
-      R__ASSERT(fAnchor->GetNBytesFooter() < std::numeric_limits<std::size_t>::max());
-      ROOT::Internal::RRawFile::RIOVec readRequests[2] = {{fStructureBuffer.fPtrHeader, fAnchor->GetSeekHeader(),
-                                                           static_cast<std::size_t>(fAnchor->GetNBytesHeader()), 0},
-                                                          {fStructureBuffer.fPtrFooter, fAnchor->GetSeekFooter(),
-                                                           static_cast<std::size_t>(fAnchor->GetNBytesFooter()), 0}};
-      fFile->ReadV(readRequests, 2);
-      fCounters->fNReadV.Inc();
    }
 }
 
@@ -484,10 +475,16 @@ ROOT::RNTupleDescriptor ROOT::Internal::RPageSourceFile::AttachImpl()
    // For the page reads, we rely on the I/O scheduler to define the read requests
    fFile->SetBuffering(false);
 
-   // Set file size once after buffering is turned off
-   fFileSize = fFile->GetSize();
-
    return fDescriptorBuilder.MoveDescriptor();
+}
+
+std::int64_t ROOT::Internal::RPageSourceFile::GetFileSizeForMetrics()
+{
+   // Determined lazily since it is only needed for the metrics and GetSize() costs a round trip for remote files
+   std::lock_guard lockGuard(fReaderLock);
+   if (fFileSize == 0 && fFile)
+      fFileSize = fFile->GetSize();
+   return fFileSize;
 }
 
 void ROOT::Internal::RPageSourceFile::UpdateSkipCounter(std::uint64_t offset)
@@ -516,6 +513,7 @@ void ROOT::Internal::RPageSourceFile::LoadSealedPageImpl(const RNTupleLocator &l
 {
    RNTupleAtomicTimer timer(fCounters->fTimeWallRead, fCounters->fTimeCpuRead);
    std::lock_guard lockGuard(fReaderLock);
+   fReader.ClearCache();
    const auto offset = locator.GetPosition<std::uint64_t>();
    UpdateSkipCounter(offset);
    fReader.ReadBuffer(const_cast<void *>(sealedPage.GetBuffer()), sealedPage.GetBufferSize(), offset);
@@ -700,6 +698,8 @@ ROOT::Internal::RPageSourceFile::LoadClusters(std::span<RCluster::RKey> clusterK
       }
 
       std::lock_guard lockGuard(fReaderLock);
+      // The file structures read ahead when opening the file are not needed anymore once page data is read
+      fReader.ClearCache();
 
       // Track seek distance for each read request (excluding file structure reads)
       for (std::size_t i = 0; i < nBatch; ++i) {
