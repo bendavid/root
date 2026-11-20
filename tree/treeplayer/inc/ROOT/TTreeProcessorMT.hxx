@@ -91,6 +91,7 @@ private:
    ROOT::TThreadedObject<ROOT::Internal::TTreeView> fTreeView{TNumSlots{ROOT::GetThreadPoolSize()}};
 
    std::vector<std::string> FindTreeNames();
+   void ProcessFilesWithLocalClusters(const std::function<void(TTreeReader &)> &func, unsigned int maxTasksPerFile);
    static unsigned int fgTasksPerWorkerHint;
 
    std::pair<Long64_t, Long64_t> fGlobalRange{0, std::numeric_limits<Long64_t>::max()};

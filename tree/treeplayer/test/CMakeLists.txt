@@ -38,6 +38,7 @@ ROOT_ADD_GTEST(ttreeindex_getlistoffriends ttreeindex_getlistoffriends.cxx LIBRA
 ROOT_ADD_GTEST(ttreereader_friends ttreereader_friends.cxx LIBRARIES TreePlayer)
 
 if(imt)
+   ROOT_ADD_GTEST(filetaskscheduler treeprocs/filetaskscheduler.cxx LIBRARIES TreePlayer)
    if (NOT MSVC)
       ROOT_ADD_GTEST(treeprocessors treeprocs/treeprocessors.cxx LIBRARIES TreePlayer)
    endif()
