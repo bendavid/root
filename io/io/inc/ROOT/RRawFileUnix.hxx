@@ -43,6 +43,7 @@ public:
    RRawFileUnix(std::string_view url, RRawFile::ROptions options);
    ~RRawFileUnix() override;
    std::unique_ptr<RRawFile> Clone() const final;
+   std::unique_ptr<RRawFile> ShallowClone() const final;
    int GetFd() const { return fFileDes; }
 };
 

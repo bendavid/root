@@ -12,6 +12,7 @@
 #include "ROOT/RRawFileNetXNG.hxx"
 
 #include <TError.h>
+#include <TSystem.h>
 
 #include <cctype>
 #include <map>
@@ -22,6 +23,7 @@
 #include <string>
 #include <vector>
 #include <utility>
+
 #include <XrdCl/XrdClFile.hh>
 #include <XrdCl/XrdClFileSystem.hh>
 #include <XrdVersion.hh>
@@ -59,6 +61,21 @@ ROOT::Internal::RRawFileNetXNG::~RRawFileNetXNG()
 std::unique_ptr<ROOT::Internal::RRawFile> ROOT::Internal::RRawFileNetXNG::Clone() const
 {
    return std::make_unique<RRawFileNetXNG>( fUrl, fOptions );
+}
+
+std::unique_ptr<ROOT::Internal::RRawFile> ROOT::Internal::RRawFileNetXNG::ShallowClone() const
+{
+   // XrdCl::File serializes the access to its state internally and supports concurrent requests from several threads,
+   // so clones can share the open file instead of opening it again (a round trip to the redirector and to the data
+   // server). An XrdCl client plugin (XRD_PLUGIN) may not support that: use an independent file in this case.
+   if (!IsOpen() || gSystem->Getenv("XRD_PLUGIN"))
+      return Clone();
+   auto clone = std::make_unique<RRawFileNetXNG>(fUrl, fOptions);
+   clone->pImpl = pImpl;
+   // The vector read limits are not copied: they may be determined concurrently by this object; the clone gets them
+   // from the per-server cache.
+   InitShallowClone(*clone);
+   return clone;
 }
 
 std::uint64_t ROOT::Internal::RRawFileNetXNG::GetSizeImpl()
