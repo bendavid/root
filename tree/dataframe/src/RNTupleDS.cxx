@@ -1024,7 +1024,11 @@ void ROOT::RDF::RNTupleDS::ProcessMT(ROOT::Detail::RDF::RLoopManager &lm)
       globalFileOffsets = ComputeGlobalEntryOffsets(pool);
 
    using Scheduler_t = ROOT::Internal::RFileTaskScheduler<RFileTasksMT>;
-   Scheduler_t scheduler(fFileNames.size(), pool.GetPoolSize());
+   // The page source of a worker prefetches (and decompresses) the clusters following the current one, up to
+   // 2 * cluster bunch size - 1 of them (see RClusterPool::GetCluster()): reserve the corresponding tasks for the worker,
+   // rather than having these clusters read again by other workers.
+   const auto nPrefetched = 2 * ROOT::Internal::RNTupleReadOptionsManip::GetClusterBunchSize(GetOpts()) - 1;
+   Scheduler_t scheduler(fFileNames.size(), pool.GetPoolSize(), nPrefetched);
 
    auto workerLoop = [&](unsigned int) {
       Scheduler_t::RWorker worker;

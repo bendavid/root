@@ -44,6 +44,9 @@ Thus a worker only needs a handle to one file at a time, it leaves a file only w
 never returns to a file it left. Leaving a file is reported in the next assignment, so that the handle can be released.
 Workers that find no work wait while files are being opened by other workers, since these may publish work.
 
+Optionally, the first few remaining tasks of a run are reserved for its worker: if the worker prefetches the data of
+its next task(s) while processing the current one, taking these tasks over would make the data be read twice.
+
 The data published for a file (FileData_t, e.g. the tasks and a prototype of the file handle) is passed to every worker
 that joins the file; the scheduler releases its reference once all the tasks of the file are assigned.
 
@@ -98,6 +101,7 @@ private:
    std::condition_variable fCvWork;
    std::vector<RFileState> fFiles;
    std::size_t fNWorkers = 0; ///< Number of workers, for the fair share; 0 if unknown
+   std::size_t fNReserved = 0; ///< Number of next tasks of a run that other workers do not take over
    std::size_t fNextUnstarted = 0;
    std::size_t fNOpening = 0;      ///< Number of files being opened, i.e. assigned but not published yet
    std::size_t fNPublished = 0;    ///< Number of files published
@@ -115,26 +119,29 @@ private:
       return static_cast<double>(nTake) >= nExpected / static_cast<double>(fNWorkers);
    }
 
-   /// Index of the run of the file with the most remaining tasks, kInvalid if there are none
+   /// Number of tasks of a run that other workers can take over
+   std::size_t GetNStealable(const RRun &run) const { return run.Size() > fNReserved ? run.Size() - fNReserved : 0; }
+
+   /// Index of the run of the file with the most tasks that can be taken over, kInvalid if there are none
    std::size_t FindLargestRun(std::size_t fileIdx) const
    {
       std::size_t best = kInvalid;
       std::size_t bestSize = 0;
       const auto &runs = fFiles[fileIdx].fRuns;
       for (std::size_t i = 0; i < runs.size(); ++i) {
-         if (runs[i].Size() > bestSize) {
-            bestSize = runs[i].Size();
+         if (GetNStealable(runs[i]) > bestSize) {
+            bestSize = GetNStealable(runs[i]);
             best = i;
          }
       }
       return best;
    }
 
-   /// Move the back half (rounded up) of the given run to a new run of the worker
+   /// Move the back half (rounded up) of the tasks of the given run that can be taken over to a new run of the worker
    void Split(RWorker &worker, std::size_t fileIdx, std::size_t runIdx)
    {
       auto &runs = fFiles[fileIdx].fRuns;
-      const auto nTake = (runs[runIdx].Size() + 1) / 2;
+      const auto nTake = (GetNStealable(runs[runIdx]) + 1) / 2;
       const RRun newRun{runs[runIdx].fEnd - nTake, runs[runIdx].fEnd};
       runs[runIdx].fEnd -= nTake;
       runs.push_back(newRun);
@@ -164,7 +171,11 @@ private:
 public:
    /// \param nFiles The number of files
    /// \param nWorkers The number of worker loops (0 if unknown), used to estimate their fair share of the work
-   explicit RFileTaskScheduler(std::size_t nFiles, std::size_t nWorkers = 0) : fFiles(nFiles), fNWorkers(nWorkers) {}
+   /// \param nReserved The number of next tasks of a run that are reserved for its worker
+   explicit RFileTaskScheduler(std::size_t nFiles, std::size_t nWorkers = 0, std::size_t nReserved = 0)
+      : fFiles(nFiles), fNWorkers(nWorkers), fNReserved(nReserved)
+   {
+   }
    RFileTaskScheduler(const RFileTaskScheduler &) = delete;
    RFileTaskScheduler &operator=(const RFileTaskScheduler &) = delete;
 
@@ -212,8 +223,8 @@ public:
             if (f == worker.fFileIdx || fFiles[f].fNUnassigned == 0)
                continue;
             const auto runIdx = FindLargestRun(f);
-            if (runIdx != kInvalid && fFiles[f].fRuns[runIdx].Size() > bestSize) {
-               bestSize = fFiles[f].fRuns[runIdx].Size();
+            if (runIdx != kInvalid && GetNStealable(fFiles[f].fRuns[runIdx]) > bestSize) {
+               bestSize = GetNStealable(fFiles[f].fRuns[runIdx]);
                bestFile = f;
                bestRun = runIdx;
             }

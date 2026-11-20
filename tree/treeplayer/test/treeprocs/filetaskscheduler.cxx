@@ -189,3 +189,43 @@ TEST(RFileTaskScheduler, FairShare)
       nHandles += n;
    EXPECT_LE(nHandles, 64 + 32);
 }
+
+TEST(RFileTaskScheduler, ReservedTasks)
+{
+   // The next task of a run is reserved for its worker: another worker never takes over the task following the one
+   // the owner is processing
+   using Scheduler_t = RFileTaskScheduler<RFileData>;
+   Scheduler_t scheduler(1, 2, /*nReserved=*/1);
+   Scheduler_t::RWorker w1, w2;
+   auto a = scheduler.Next(w1);
+   ASSERT_TRUE(a && a->fKind == Scheduler_t::EKind::kOpenFile);
+   scheduler.Publish(w1, 2, std::make_shared<RFileData>(RFileData{0}));
+   a = scheduler.Next(w1);
+   ASSERT_TRUE(a);
+   EXPECT_EQ(0u, a->fTaskIdx);
+   // Task 1 is reserved for w1: nothing for w2, which terminates since no file is being opened
+   EXPECT_FALSE(scheduler.Next(w2).has_value());
+   a = scheduler.Next(w1);
+   ASSERT_TRUE(a);
+   EXPECT_EQ(1u, a->fTaskIdx);
+   EXPECT_FALSE(scheduler.Next(w1).has_value());
+
+   // With more tasks, the back half of the remaining tasks after the reserved one is taken over
+   Scheduler_t scheduler2(1, 2, /*nReserved=*/1);
+   Scheduler_t::RWorker w3, w4;
+   a = scheduler2.Next(w3);
+   scheduler2.Publish(w3, 6, std::make_shared<RFileData>(RFileData{0}));
+   a = scheduler2.Next(w3); // task 0; remaining 1-5, 1 reserved, 2-5 can be taken over
+   ASSERT_TRUE(a);
+   EXPECT_EQ(0u, a->fTaskIdx);
+   a = scheduler2.Next(w4);
+   ASSERT_TRUE(a);
+   EXPECT_EQ(4u, a->fTaskIdx);
+   EXPECT_EQ(6u, a->fRunEnd);
+   std::set<std::size_t> seen{0, 4};
+   while (auto b = scheduler2.Next(w3))
+      seen.insert(b->fTaskIdx);
+   while (auto b = scheduler2.Next(w4))
+      seen.insert(b->fTaskIdx);
+   EXPECT_EQ(6u, seen.size());
+}
