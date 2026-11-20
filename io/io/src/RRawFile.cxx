@@ -101,8 +101,10 @@ void ROOT::Internal::RRawFile::EnsureOpen()
 
 void ROOT::Internal::RRawFile::ReadVImpl(RIOVec *ioVec, unsigned int nReq)
 {
+   // Vector reads are explicit, exactly sized requests: serve them directly rather than through the block buffer,
+   // which would turn every request smaller than the block size into a full block read.
    for (unsigned i = 0; i < nReq; ++i) {
-      ioVec[i].fOutBytes = ReadAt(ioVec[i].fBuffer, ioVec[i].fSize, ioVec[i].fOffset);
+      ioVec[i].fOutBytes = (ioVec[i].fSize > 0) ? ReadAtImpl(ioVec[i].fBuffer, ioVec[i].fSize, ioVec[i].fOffset) : 0;
    }
 }
 
