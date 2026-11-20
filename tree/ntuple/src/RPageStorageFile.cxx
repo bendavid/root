@@ -526,7 +526,12 @@ std::unique_ptr<ROOT::Internal::RPageSource> ROOT::Internal::RPageSourceFile::Cl
 {
    auto clone = new RPageSourceFile(fNTupleName, fOptions);
    clone->fFile = fFile->Clone();
+   // A clone of an attached source does not go through LoadStructureImpl() and AttachImpl(), so it needs to inherit
+   // the buffering mode (unbuffered page reads, including the corresponding OS read-ahead advice) and the max key
+   // size. Without the latter, LoadClusters() limits the vector read element size to 0 and reads every request singly.
+   clone->fFile->SetBuffering(fFile->IsBuffering());
    clone->fReader = ROOT::Internal::RMiniFileReader(clone->fFile.get());
+   clone->fReader.SetMaxKeySize(fReader.GetMaxKeySize());
    return std::unique_ptr<RPageSourceFile>(clone);
 }
 
@@ -670,8 +675,9 @@ ROOT::Internal::RPageSourceFile::LoadClusters(std::span<RCluster::RKey> clusterK
 
    auto nReqs = readRequests.size();
    auto readvLimits = fFile->GetReadVLimits();
-   // We never want to do vectorized reads of split blobs, so we limit our single size to maxKeySize.
-   readvLimits.fMaxSingleSize = std::min<size_t>(readvLimits.fMaxSingleSize, fReader.GetMaxKeySize());
+   // We never want to do vectorized reads of split blobs, so we limit our single size to maxKeySize (if known).
+   if (fReader.GetMaxKeySize() > 0)
+      readvLimits.fMaxSingleSize = std::min<size_t>(readvLimits.fMaxSingleSize, fReader.GetMaxKeySize());
 
    int iReq = 0;
    while (nReqs > 0) {
