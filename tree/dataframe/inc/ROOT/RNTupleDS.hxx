@@ -91,9 +91,6 @@ GetClustersAndEntries(std::string_view ntupleName, std::string_view location);
 namespace ROOT {
 class TThreadExecutor;
 }
-namespace ROOT::Internal::IMTUtils {
-class RAbstractTBBRangeImpl;
-}
 #endif
 
 namespace ROOT::RDF {
@@ -260,29 +257,18 @@ class RNTupleDS final : public ROOT::RDF::RDataSource {
 
    // Helpers for the MT scheduling
 
+   struct RFileTasksMT;
    void InsertActiveEntryRange(unsigned int slot, std::string_view fileName,
                                std::shared_ptr<ROOT::Internal::RPageSource> pageSource, std::uint64_t beginEntry,
                                std::uint64_t endEntry, std::uint64_t offset);
-   void ParallelForBody(std::shared_ptr<ROOT::Internal::RPageSource> pageSource,
-                        const ROOT::Internal::IMTUtils::RAbstractTBBRangeImpl &rangeImpl,
-                        ROOT::Detail::RDF::RLoopManager &lm, std::string_view fileName,
-                        ROOT::Internal::RSlotStack &slotStack, std::atomic<ULong64_t> &processedEntries,
-                        ULong64_t columnReaderOffset);
-   void ScheduleTaskForPageSource(ROOT::TThreadExecutor &pool, std::unique_ptr<ROOT::Internal::RPageSource> pageSource,
-                                  std::string_view fileName,
-                                  std::span<const ROOT::Internal::RNTupleClusterBoundaries> clusterBoundaries,
-                                  std::uint64_t nEntries, ROOT::Detail::RDF::RLoopManager &lm,
-                                  ROOT::Internal::RSlotStack &slotStack, std::atomic<ULong64_t> &processedEntries,
-                                  std::atomic<ULong64_t> &globalEntries);
+   std::shared_ptr<RFileTasksMT> PrepareFileTasksMT(std::size_t fileIdx,
+                                                    const std::vector<std::uint64_t> &globalFileOffsets,
+                                                    std::atomic<ULong64_t> &globalEntries);
+   void ProcessFileTaskMT(const std::shared_ptr<ROOT::Internal::RPageSource> &pageSource, const RFileTasksMT &tasks,
+                          std::size_t taskIdx, std::size_t runEnd, ROOT::Detail::RDF::RLoopManager &lm,
+                          std::string_view fileName, ROOT::Internal::RSlotStack &slotStack,
+                          std::atomic<ULong64_t> &processedEntries);
    std::vector<std::uint64_t> ComputeGlobalEntryOffsets(ROOT::TThreadExecutor &pool) const;
-   void ScheduleTasksForFileWithGlobalOffset(std::size_t fileIdx, const std::vector<std::uint64_t> &globalFileOffsets,
-                                             ROOT::TThreadExecutor &pool, ROOT::Detail::RDF::RLoopManager &lm,
-                                             ROOT::Internal::RSlotStack &slotStack,
-                                             std::atomic<ULong64_t> &processedEntries,
-                                             std::atomic<ULong64_t> &globalEntries);
-   void ScheduleTasksForFile(std::size_t fileIdx, ROOT::TThreadExecutor &pool, ROOT::Detail::RDF::RLoopManager &lm,
-                             ROOT::Internal::RSlotStack &slotStack, std::atomic<ULong64_t> &processedEntries,
-                             std::atomic<ULong64_t> &globalEntries);
    void ProcessMT(ROOT::Detail::RDF::RLoopManager &lm) final;
 
 #endif

@@ -42,7 +42,7 @@
 #ifdef R__USE_IMT
 #include <ROOT/RSpan.hxx>
 #include <ROOT/RSlotStack.hxx>
-#include <ROOT/InternalIMTUtils.hxx>
+#include <ROOT/RFileTaskScheduler.hxx>
 #include <ROOT/TThreadExecutor.hxx>
 #endif
 
@@ -847,66 +847,18 @@ ROOT::Internal::RDF::GetClustersAndEntries(std::string_view ntupleName, std::str
 }
 
 #ifdef R__USE_IMT
-namespace {
-
-/// \brief Implementation of the Range type to be used in a parallel_for when processing RNTuple data with RDataFrame.
-///
-/// The class represents one range of entries (N consecutive clusters) tied to a specific page source to be processed.
-/// The current MT strategy launches an outer parallel_for with exactly one task per page source, then within each of
-/// these launches another parallel_for that will take an instance of this class. The initial state of the class is to
-/// include the whole list of clusters of the corresponding page source. TBB will eagerly split this range in as many
-/// ranges as possible, until there is a full set of non-splittable ranges (based on IsDivisible). The split ranges
-/// only have a different begin and end cluster, there is no page source copying or cloning done by this range, instead
-/// that happens in the ParallelForBody so that it can be limited by the number of RDF slots used.
-class RSplittableRangeOfClusterBoundaries final : public ROOT::Internal::IMTUtils::RAbstractTBBRangeImpl {
-   // A view of all the cluster boundaries in the page source
-   std::span<const ROOT::Internal::RNTupleClusterBoundaries> fClusters;
-   std::size_t fClusterIdxBegin; // inclusive
-   std::size_t fClusterIdxEnd;   // exclusive
-
-public:
-   RSplittableRangeOfClusterBoundaries(std::span<const ROOT::Internal::RNTupleClusterBoundaries> clusters,
-                                       std::size_t clusterIdxBegin, std::size_t clusterIdxEnd)
-      : fClusters(clusters), fClusterIdxBegin(clusterIdxBegin), fClusterIdxEnd(clusterIdxEnd)
-   {
-      assert(fClusterIdxEnd > fClusterIdxBegin);
-   }
-
-   std::unique_ptr<ROOT::Internal::IMTUtils::RAbstractTBBRangeImpl> SplitWork() final
-   {
-      // Split the cluster range in half
-      auto clusterIdxMid = fClusterIdxBegin + (fClusterIdxEnd - fClusterIdxBegin) / 2;
-      auto newClusterIdxBegin = clusterIdxMid;
-      auto newClusterIdxEnd = fClusterIdxEnd;
-      fClusterIdxEnd = clusterIdxMid;
-
-      return std::make_unique<RSplittableRangeOfClusterBoundaries>(fClusters, newClusterIdxBegin, newClusterIdxEnd);
-   }
-
-   bool IsDivisible() const final
-   {
-      // We choose two because the page source prefetches one cluster ahead of the current one.
-      return fClusterIdxEnd - fClusterIdxBegin > 2;
-   }
-
-   bool Empty() const final
-   {
-      // empty is called once at the beginning of the parallel_for, to guard against empty tasks. We only pass tasks
-      // with actual work by construction
-      return false;
-   }
-
-   std::uint64_t GetCurrentBeginEntry() const { return fClusters[fClusterIdxBegin].fFirstEntry; }
-
-   std::uint64_t GetCurrentEndEntry() const { return fClusters[fClusterIdxEnd - 1].fLastEntryPlusOne; }
-
-   bool IsProcessingFirstCluster() const { return fClusterIdxBegin == 0; }
+/// \brief The tasks of a file in the MT event loop: one task per cluster
+struct ROOT::RDF::RNTupleDS::RFileTasksMT {
+   /// The page source opened for the file. The worker that opened the file uses it, workers joining the file clone it.
+   std::shared_ptr<ROOT::Internal::RPageSource> fSource;
+   /// The clusters (entry ranges) to process, possibly restricted to the global entry range
+   std::vector<ROOT::Internal::RNTupleClusterBoundaries> fClusters;
+   /// Offset value to pass to the column readers, see ProcessFileTaskMT()
+   std::uint64_t fColumnReaderOffset = 0;
 };
-} // namespace
 
-// For now we need this function as a pass-through for the information contained in a
-// RSplittableRangeOfClusterBoundaries to be available to the rest of the computation graph (e.g. to connect the column
-// readers and update the sample info)
+// Pass-through for the information on the entry range being processed to the rest of the computation graph (e.g. to
+// connect the column readers and update the sample info)
 void ROOT::RDF::RNTupleDS::InsertActiveEntryRange(unsigned int slot, std::string_view fileName,
                                                   std::shared_ptr<ROOT::Internal::RPageSource> pageSource,
                                                   std::uint64_t beginEntry, std::uint64_t endEntry,
@@ -921,95 +873,106 @@ void ROOT::RDF::RNTupleDS::InsertActiveEntryRange(unsigned int slot, std::string
    fActiveRangesPerSlot.at(slot * ROOT::Internal::RDF::CacheLineStep<REntryRangeDS>()) = std::move(entryRangeDS);
 }
 
-/// \brief Apply the computation graph to an input range.
-/// \param pageSource The page source to read data from.
-/// \param rangeImpl A Range type carrying information on the range of entries to process.
+/// \brief Open a file and determine the tasks (clusters) to process
+/// \param fileIdx The index of the file.
+/// \param globalFileOffsets The entry offsets of the files in the dataset, only used if a global entry range is set.
+/// \param globalEntries Cumulating total number of entries in the input dataset.
+///
+/// If a global entry range is set, the list of clusters is restricted to it. Files without entries or outside of the
+/// global entry range have no tasks.
+std::shared_ptr<ROOT::RDF::RNTupleDS::RFileTasksMT>
+ROOT::RDF::RNTupleDS::PrepareFileTasksMT(std::size_t fileIdx, const std::vector<std::uint64_t> &globalFileOffsets,
+                                         std::atomic<ULong64_t> &globalEntries)
+{
+   auto tasks = std::make_shared<RFileTasksMT>();
+   auto source = CreatePageSource(fNTupleName, fFileNames[fileIdx]);
+   source->Attach();
+   // TODO: improve MT scheduling such that not all page lists are required right away
+   source->LoadAllPageLists();
+
+   ROOT::NTupleSize_t nEntries = 0;
+   {
+      const auto descGuard = source->GetSharedDescriptorGuard();
+      nEntries = descGuard->GetNEntries();
+      if (nEntries == 0)
+         return tasks;
+      tasks->fClusters = ROOT::Internal::GetClusterBoundaries(descGuard.GetConstRef());
+   }
+
+   if (fGlobalEntryRange.has_value()) {
+      const std::uint64_t globalFileOffset = globalFileOffsets[fileIdx];
+      const auto [globalBegin, globalEnd] = fGlobalEntryRange.value();
+      // The boundaries of this file are not touched by the global entry range
+      if ((globalFileOffset + nEntries) < globalBegin || globalFileOffset > globalEnd) {
+         tasks->fClusters.clear();
+         return tasks;
+      }
+      const auto &clustersInFile = tasks->fClusters;
+      // The list of cluster boundaries in this file needs to be adjusted if either the beginning or the end of the
+      // global entry range fall within the boundaries of the entries of this file.
+      if ((globalBegin >= globalFileOffset) || (globalEnd < (globalFileOffset + nEntries))) {
+         std::vector<ROOT::Internal::RNTupleClusterBoundaries> adjustedClusters;
+         for (const auto &cluster : clustersInFile) {
+            const std::uint64_t localBegin = globalBegin < globalFileOffset ? 0 : globalBegin - globalFileOffset;
+            const std::uint64_t localEnd =
+               globalEnd > globalFileOffset + nEntries ? globalFileOffset + nEntries : globalEnd - globalFileOffset;
+            const auto currentBegin = std::max(cluster.fFirstEntry, localBegin);
+            const auto currentEnd = std::min(cluster.fLastEntryPlusOne, localEnd);
+            // This is not satified if the desired begin is larger than the last entry of some cluster
+            // In this case, this cluster is not going to be processed further
+            if (currentBegin < currentEnd)
+               adjustedClusters.push_back(ROOT::Internal::RNTupleClusterBoundaries{currentBegin, currentEnd});
+         }
+         tasks->fClusters = std::move(adjustedClusters);
+      }
+   }
+
+   tasks->fColumnReaderOffset = globalEntries.fetch_add(nEntries);
+   tasks->fSource = std::move(source);
+   return tasks;
+}
+
+/// \brief Apply the computation graph to one task (cluster) of a file.
+/// \param pageSource The page source of the worker for this file.
+/// \param tasks The tasks of the file.
+/// \param taskIdx The task to process.
+/// \param runEnd The end (exclusive) of the run of consecutive tasks of this worker in the file.
 /// \param lm The RLoopManager which will run the computation graph.
 /// \param fileName Path to the storage location of the page source.
 /// \param slotStack A stack of slots, each thread needs to request one before running the computation graph.
 /// \param processedEntries Cumulating number of processed entries by this computation graph run.
-/// \param columnReaderOffset Offset value to pass to column readers used in this task. The column reader will request
-/// entries from the page source receiving a global entry number, this offset is subtracted so that the column reader
-/// requests the local entry from the page source.
-void ROOT::RDF::RNTupleDS::ParallelForBody(std::shared_ptr<ROOT::Internal::RPageSource> pageSource,
-                                           const ROOT::Internal::IMTUtils::RAbstractTBBRangeImpl &rangeImpl,
-                                           ROOT::Detail::RDF::RLoopManager &lm, std::string_view fileName,
-                                           ROOT::Internal::RSlotStack &slotStack,
-                                           std::atomic<ULong64_t> &processedEntries, ULong64_t columnReaderOffset)
+///
+/// The column reader offset of the file is passed to the column readers used in this task. The column reader will
+/// request entries from the page source receiving a global entry number, this offset is subtracted so that the column
+/// reader requests the local entry from the page source.
+void ROOT::RDF::RNTupleDS::ProcessFileTaskMT(const std::shared_ptr<ROOT::Internal::RPageSource> &pageSource,
+                                             const RFileTasksMT &tasks, std::size_t taskIdx, std::size_t runEnd,
+                                             ROOT::Detail::RDF::RLoopManager &lm, std::string_view fileName,
+                                             ROOT::Internal::RSlotStack &slotStack,
+                                             std::atomic<ULong64_t> &processedEntries)
 {
    ROOT::Internal::RSlotStackRAII slotRAII{slotStack};
    const auto &slot = slotRAII.fSlot;
 
-   const auto &range = static_cast<const RSplittableRangeOfClusterBoundaries &>(rangeImpl);
-   const auto &beginEntry = range.GetCurrentBeginEntry();
-   const auto &endEntry = range.GetCurrentEndEntry();
+   const auto beginEntry = tasks.fClusters[taskIdx].fFirstEntry;
+   const auto endEntry = tasks.fClusters[taskIdx].fLastEntryPlusOne;
+   const auto offset = tasks.fColumnReaderOffset;
 
-   // We clone the page source only within this function scope, to limit the number of open page sources to 2*fNSlots
-   auto localPageSource = [&]() -> std::shared_ptr<ROOT::Internal::RPageSource> {
-      // In order to avoid an extra Clone, we need to choose one of the ranges that will take the original page source,
-      // we choose it to be the one processing the first valid cluster
-      if (range.IsProcessingFirstCluster())
-         return pageSource;
-
-      auto newPageSource = pageSource->Clone();
-      newPageSource->Attach();
-      return newPageSource;
-   }();
-
-   // Notify the current page source about the current entry range
-   localPageSource->SetEntryRange({beginEntry, endEntry - beginEntry});
+   // The worker processes its run of consecutive clusters with the same page source: let it prefetch the following
+   // clusters of the run while the current one is processed
+   const auto runEndEntry = tasks.fClusters[runEnd - 1].fLastEntryPlusOne;
+   pageSource->SetEntryRange({beginEntry, runEndEntry - beginEntry});
 
    processedEntries.fetch_add(endEntry - beginEntry);
 
    // At this point we let the RNTupleDS know about the range being processed by this task. This is used for relevant
    // operations e.g. connecting the column readers as well as populating sample information.
-   InsertActiveEntryRange(slot, fileName, std::move(localPageSource), beginEntry, endEntry, columnReaderOffset);
+   InsertActiveEntryRange(slot, fileName, pageSource, beginEntry, endEntry, offset);
 
-   lm.RNTupleThreadTask({beginEntry + columnReaderOffset, endEntry + columnReaderOffset}, slot, columnReaderOffset);
+   lm.RNTupleThreadTask({beginEntry + offset, endEntry + offset}, slot, offset);
 
-   // Clear the active range after having processed it, to avoid keeping around the page source for longer than intended
+   // Clear the active range after having processed it
    fActiveRangesPerSlot.at(slot * ROOT::Internal::RDF::CacheLineStep<REntryRangeDS>()) = {};
-}
-
-/// \brief Call parallel_for to schedule a splittable task for a page source
-/// \param pool The pool of threads used to schedule the task.
-/// \param pageSource The RNTuple page source for the task.
-/// \param fileName Path to the storage location of the page source.
-/// \param clusterBoundaries A list of cluster boundaries valid for the page source. This may be computed differently,
-/// see ProcessMT.
-/// \param nEntries Number of entries in the page source.
-/// \param lm The RLoopManager which will run the computation graph.
-/// \param slotStack A stack of slots, each thread needs to request one before running the computation graph.
-/// \param processedEntries Cumulating number of processed entries by this computation graph run.
-/// \param globalEntries Cumulating total number of entries in the input dataset.
-///
-/// This function calls the parallel_for overload that takes two arguments, one respecting the Range and the other
-/// respecting the Body requirements. The Range argument is a RSplittableRangeOfClusterBoundaries, a struct with a range
-/// of N cluster boundaries to process (initialised to the whole list of clusters). Immediately when calling
-/// parallel_for, TBB will recursively ask the RSplittableRangeOfClusterBoundaries to split itself into two roughly
-/// equal sub-tasks, until there are only leaf tasks that cannot be split further. This helps balancing cases where some
-/// tasks may end up running much longer than others.
-void ROOT::RDF::RNTupleDS::ScheduleTaskForPageSource(
-   ROOT::TThreadExecutor &pool, std::unique_ptr<ROOT::Internal::RPageSource> pageSource, std::string_view fileName,
-   std::span<const ROOT::Internal::RNTupleClusterBoundaries> clusterBoundaries, std::uint64_t nEntries,
-   ROOT::Detail::RDF::RLoopManager &lm, ROOT::Internal::RSlotStack &slotStack, std::atomic<ULong64_t> &processedEntries,
-   std::atomic<ULong64_t> &globalEntries)
-{
-
-   const auto columnReaderOffset{globalEntries.fetch_add(nEntries)};
-
-   // We need to share the same page source pointer across all splitted tasks, to decide if we clone it (in most cases)
-   // or not (one task will take the original page source).
-   std::shared_ptr<ROOT::Internal::RPageSource> sharedPageSource{std::move(pageSource)};
-
-   auto parallelForBody = [this, &sharedPageSource, &lm, &fileName, &slotStack, &processedEntries,
-                           &columnReaderOffset](const ROOT::Internal::IMTUtils::RAbstractTBBRangeImpl &rangeImpl) {
-      this->ParallelForBody(sharedPageSource, rangeImpl, lm, fileName, slotStack, processedEntries, columnReaderOffset);
-   };
-
-   ROOT::Internal::IMTUtils::ParallelFor(
-      pool, std::make_unique<RSplittableRangeOfClusterBoundaries>(clusterBoundaries, 0, clusterBoundaries.size()),
-      parallelForBody);
 }
 
 /// \brief Computes global entry offsets for the dataset
@@ -1041,107 +1004,14 @@ std::vector<std::uint64_t> ROOT::RDF::RNTupleDS::ComputeGlobalEntryOffsets(ROOT:
    return ret;
 }
 
-/// \brief Launch the task(s) for the input file index, taking into account dataset global entry offsets.
-///
-/// This function is used in MT scheduling to launch a task processing one input file. It is selected when
-/// the user specifies a global entry range to restrict processing to. In this scenario we have precomputed the global
-/// entry offsets of each file upfront so we can then adjust the range of entries in each file accordingly. The task may
-/// be split into smaller tasks based on entry ranges aligned to cluster boundaries, see ScheduleTaskForPageSource.
-void ROOT::RDF::RNTupleDS::ScheduleTasksForFileWithGlobalOffset(
-   std::size_t fileIdx, const std::vector<std::uint64_t> &globalFileOffsets, ROOT::TThreadExecutor &pool,
-   ROOT::Detail::RDF::RLoopManager &lm, ROOT::Internal::RSlotStack &slotStack, std::atomic<ULong64_t> &processedEntries,
-   std::atomic<ULong64_t> &globalEntries)
-{
-   const auto &fileName = fFileNames[fileIdx];
-   auto source = CreatePageSource(fNTupleName, fileName);
-   source->Attach();
-   // TODO: improve MT scheduling such that not all page lists are required right away
-   source->LoadAllPageLists();
-
-   const std::uint64_t globalFileOffset = globalFileOffsets[fileIdx];
-   // captured structured bindings are a C++20 extension
-   const auto globalBegin = fGlobalEntryRange.value().first;
-   const auto globalEnd = fGlobalEntryRange.value().second;
-
-   const auto clustersAndEntries =
-      [&]() -> std::pair<std::vector<ROOT::Internal::RNTupleClusterBoundaries>, ROOT::NTupleSize_t> {
-      const auto descGuard = source->GetSharedDescriptorGuard();
-      const auto nEntries = descGuard->GetNEntries();
-      // Early return:
-      // - There are no entries in the file
-      // - The boundaries of this file are not touched by the global entry range
-      if (nEntries == 0 || (globalFileOffset + nEntries) < globalBegin || globalFileOffset > globalEnd)
-         return {{}, ROOT::kInvalidNTupleIndex};
-
-      const auto clustersInFile = ROOT::Internal::GetClusterBoundaries(descGuard.GetConstRef());
-
-      // The list of cluster boundaries in this file needs to be adjusted if either the beginning or the end of the
-      // global entry range fall within the boundaries of the entries of this file.
-      if ((globalBegin >= globalFileOffset) || (globalEnd < (globalFileOffset + nEntries))) {
-         std::vector<ROOT::Internal::RNTupleClusterBoundaries> adjustedClusters;
-         for (const auto &cluster : clustersInFile) {
-            const std::uint64_t localBegin = globalBegin < globalFileOffset ? 0 : globalBegin - globalFileOffset;
-            const std::uint64_t localEnd =
-               globalEnd > globalFileOffset + nEntries ? globalFileOffset + nEntries : globalEnd - globalFileOffset;
-            const auto currentBegin = std::max(cluster.fFirstEntry, localBegin);
-            const auto currentEnd = std::min(cluster.fLastEntryPlusOne, localEnd);
-            // This is not satified if the desired begin is larger than the last entry of some cluster
-            // In this case, this cluster is not going to be processed further
-            if (currentBegin < currentEnd)
-               adjustedClusters.push_back(ROOT::Internal::RNTupleClusterBoundaries{currentBegin, currentEnd});
-         }
-         return std::make_pair(adjustedClusters, nEntries);
-      }
-
-      return std::make_pair(clustersInFile, nEntries);
-   }();
-   const ROOT::NTupleSize_t nEntries = clustersAndEntries.second;
-   if (nEntries == ROOT::kInvalidNTupleIndex)
-      return;
-   const auto &clusters = clustersAndEntries.first;
-   ScheduleTaskForPageSource(pool, std::move(source), fileName, clusters, nEntries, lm, slotStack, processedEntries,
-                             globalEntries);
-}
-
-/// \brief Launch the task(s) for the input file index
-///
-/// This function is used in MT scheduling to launch a task processing one input file. It is selected when
-/// there is no global entry range. The task may be split into smaller tasks based on entry ranges aligned to cluster
-/// boundaries, see ScheduleTaskForPageSource.
-void ROOT::RDF::RNTupleDS::ScheduleTasksForFile(std::size_t fileIdx, ROOT::TThreadExecutor &pool,
-                                                ROOT::Detail::RDF::RLoopManager &lm,
-                                                ROOT::Internal::RSlotStack &slotStack,
-                                                std::atomic<ULong64_t> &processedEntries,
-                                                std::atomic<ULong64_t> &globalEntries)
-{
-   // Evaluate clusters (with local entry numbers) and number of entries for this file
-   const auto &fileName = fFileNames[fileIdx];
-   auto source = CreatePageSource(fNTupleName, fFileNames[fileIdx]);
-   source->Attach();
-   // TODO: improve MT scheduling such that not all page lists are required right away
-   source->LoadAllPageLists();
-   const auto clustersAndEntries = [&]() {
-      const auto descGuard = source->GetSharedDescriptorGuard();
-      return std::make_pair(ROOT::Internal::GetClusterBoundaries(descGuard.GetConstRef()), descGuard->GetNEntries());
-   }();
-   const ROOT::NTupleSize_t nEntries = clustersAndEntries.second;
-   if (nEntries == 0)
-      return;
-   const auto &clusters = clustersAndEntries.first;
-   ScheduleTaskForPageSource(pool, std::move(source), fileName, clusters, nEntries, lm, slotStack, processedEntries,
-                             globalEntries);
-}
-
 /// \brief Run the computation graph by scheduling MT tasks
 ///
 /// The data source interacts with the loop manager and with a pool of threads (via TThreadExecutor) at the same time.
-/// The function schedules one MT task per input file, eventually calling the parallel_for overload taking two input
-/// arguments respectively respecting the Range and Body requirements. This means that each of the file-based tasks
-/// can be split into various sub-tasks, each processing a set of consecutive clusters of the same file. Before
-/// launching the file-based tasks, the function checks if the user has selected a global range of entries to restrict
-/// processing to. If so, the function first computes the global entry offsets of all the input files, so they can be
-/// matched against the user-provided global range. These will be used to adjust the list of clusters of the file before
-/// spawning the corresponding task.
+/// One worker loop per thread gets tasks from an RFileTaskScheduler: a worker opens a file, determines its clusters
+/// and processes them in order with the same page source. Other workers join a file (with a clone of its page source,
+/// which shares the open file) only when there are no unstarted files left. Each task processes one cluster.
+/// If the user has selected a global range of entries to restrict processing to, the function first computes the
+/// global entry offsets of all the input files, so that the clusters of each file can be matched against the range.
 void ROOT::RDF::RNTupleDS::ProcessMT(ROOT::Detail::RDF::RLoopManager &lm)
 {
    ROOT::TThreadExecutor pool;
@@ -1149,21 +1019,44 @@ void ROOT::RDF::RNTupleDS::ProcessMT(ROOT::Detail::RDF::RLoopManager &lm)
    std::atomic<ULong64_t> processedEntries(0ull);
    std::atomic<ULong64_t> globalEntries(0ull);
 
-   if (fGlobalEntryRange.has_value()) {
-      const auto globalFileOffsets = ComputeGlobalEntryOffsets(pool);
-      pool.Foreach(
-         [&](std::size_t fileIdx) {
-            ScheduleTasksForFileWithGlobalOffset(fileIdx, globalFileOffsets, pool, lm, slotStack, processedEntries,
-                                                 globalEntries);
-         },
-         ROOT::TSeq<std::size_t>(fFileNames.size()));
-   } else {
-      pool.Foreach(
-         [&](std::size_t fileIdx) {
-            ScheduleTasksForFile(fileIdx, pool, lm, slotStack, processedEntries, globalEntries);
-         },
-         ROOT::TSeq<std::size_t>(fFileNames.size()));
-   }
+   std::vector<std::uint64_t> globalFileOffsets;
+   if (fGlobalEntryRange.has_value())
+      globalFileOffsets = ComputeGlobalEntryOffsets(pool);
+
+   using Scheduler_t = ROOT::Internal::RFileTaskScheduler<RFileTasksMT>;
+   Scheduler_t scheduler(fFileNames.size(), pool.GetPoolSize());
+
+   auto workerLoop = [&](unsigned int) {
+      Scheduler_t::RWorker worker;
+      std::shared_ptr<ROOT::Internal::RPageSource> source; // the page source of the worker for its current file
+      std::shared_ptr<RFileTasksMT> tasks;
+      try {
+         while (auto assignment = scheduler.Next(worker)) {
+            if (assignment->fLeftFile) {
+               source.reset();
+               tasks.reset();
+            }
+            if (assignment->fKind == Scheduler_t::EKind::kOpenFile) {
+               tasks = PrepareFileTasksMT(assignment->fFileIdx, globalFileOffsets, globalEntries);
+               source = tasks->fSource;
+               scheduler.Publish(worker, tasks->fClusters.size(), tasks);
+               continue;
+            }
+            if (assignment->fFileData) {
+               // Joining a file opened by another worker
+               tasks = std::move(assignment->fFileData);
+               source = tasks->fSource->Clone();
+               source->Attach();
+            }
+            ProcessFileTaskMT(source, *tasks, assignment->fTaskIdx, assignment->fRunEnd, lm,
+                              fFileNames[assignment->fFileIdx], slotStack, processedEntries);
+         }
+      } catch (...) {
+         scheduler.Abort();
+         throw;
+      }
+   };
+   pool.Foreach(workerLoop, ROOT::TSeq<unsigned int>(pool.GetPoolSize()));
 
    if (fGlobalEntryRange.has_value()) {
       const auto [begin, end] = fGlobalEntryRange.value();
