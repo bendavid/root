@@ -148,8 +148,9 @@ private:
       ROOT::Experimental::Detail::RNTupleCalcPerf &fSparseness;
    };
    std::unique_ptr<RFileCounters> fFileCounters;
-   /// Total file size, set once in AttachImpl()
+   /// Total file size, determined lazily for the metrics, see GetFileSizeForMetrics()
    std::int64_t fFileSize = 0;
+   std::int64_t GetFileSizeForMetrics();
 
    RPageSourceFile(std::string_view ntupleName, const ROOT::RNTupleReadOptions &options);
 
