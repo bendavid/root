@@ -25,9 +25,12 @@ objects.
 
 #include <cmath>
 #include <memory>
+#include <tuple>
+#include <utility>
 
 #include "TROOT.h"
 #include "ROOT/TTreeProcessorMT.hxx"
+#include "ROOT/RFileTaskScheduler.hxx"
 
 using namespace ROOT;
 
@@ -125,6 +128,77 @@ ConvertToElistClusters(std::vector<std::vector<EntryRange>> &&clusters, TEntryLi
 using ClustersAndEntries = std::pair<std::vector<std::vector<EntryRange>>, std::vector<Long64_t>>;
 
 ////////////////////////////////////////////////////////////////////////
+/// Open a file and get the tree to be processed from it; the tree is owned by the file.
+std::pair<std::unique_ptr<TFile>, TTree *> OpenTreeForProcessing(const std::string &fileName, const std::string &treeName)
+{
+   TDirectory::TContext c;
+   std::unique_ptr<TFile> f(TFile::Open(fileName.c_str(),
+                                        "READ_WITHOUT_GLOBALREGISTRATION")); // need TFile::Open to load plugins if need be
+   if (!f || f->IsZombie()) {
+      const auto msg = "TTreeProcessorMT::Process: an error occurred while opening file \"" + fileName + "\"";
+      throw std::runtime_error(msg);
+   }
+   auto *t = f->Get<TTree>(treeName.c_str()); // t will be deleted by f
+
+   if (!t) {
+      const auto msg = "TTreeProcessorMT::Process: an error occurred while getting tree \"" + treeName +
+                       "\" from file \"" + fileName + "\"";
+      throw std::runtime_error(msg);
+   }
+
+   // Avoid calling TROOT::RecursiveRemove for this tree, it takes the read lock and we don't need it.
+   t->ResetBit(kMustCleanup);
+   ROOT::Internal::TreeUtils::ClearMustCleanupBits(*t->GetListOfBranches());
+   return {std::move(f), t};
+}
+
+////////////////////////////////////////////////////////////////////////
+/// Merge the clusters of a file into at most maxTasksPerFile tasks.
+///
+/// Here we "fuse" clusters together if the number of clusters is too big with respect to
+/// the number of slots, otherwise we can incur in an overhead which is big enough
+/// to make parallelisation detrimental to performance.
+/// For example, this is the case when, following a merging of many small files, a file
+/// contains a tree with many entries and with clusters of just a few entries each.
+/// Another problematic case is a high number of slots (e.g. 256) coupled with a high number
+/// of files (e.g. 1000 files): the large amount of files might result in a large amount
+/// of tasks, but the elevated concurrency level makes the little synchronization required by
+/// task initialization very expensive. In this case it's better to simply process fewer, larger tasks.
+/// Cluster-merging can help reduce the number of tasks down to a minumum of one task per file.
+///
+/// The criterion according to which we fuse clusters together is to have around
+/// TTreeProcessorMT::GetTasksPerWorkerHint() clusters per slot.
+/// Concretely, for each file we will cap the number of tasks to ceil(GetTasksPerWorkerHint() * nWorkers / nFiles).
+std::vector<EntryRange> FuseClusters(std::vector<EntryRange> clustersInThisFile, const unsigned int maxTasksPerFile)
+{
+   const auto clustersInThisFileSize = clustersInThisFile.size();
+   const auto nFolds = clustersInThisFileSize / maxTasksPerFile;
+   // If the number of clusters is less than maxTasksPerFile
+   // we take the clusters as they are
+   if (nFolds == 0)
+      return clustersInThisFile;
+
+   // Otherwise, we have to merge clusters, distributing the reminder evenly
+   // onto the first clusters
+   std::vector<EntryRange> eventRanges;
+   auto nReminderClusters = clustersInThisFileSize % maxTasksPerFile;
+   for (auto i = 0ULL; i < clustersInThisFileSize; ++i) {
+      const auto start = clustersInThisFile[i].first;
+      // We lump together at least nFolds clusters, therefore
+      // we need to jump ahead of nFolds-1.
+      i += (nFolds - 1);
+      // We now add a cluster if we have some reminder left
+      if (nReminderClusters > 0) {
+         i += 1U;
+         nReminderClusters--;
+      }
+      const auto end = clustersInThisFile[i].second;
+      eventRanges.emplace_back(EntryRange({start, end}));
+   }
+   return eventRanges;
+}
+
+////////////////////////////////////////////////////////////////////////
 /// Return a vector of cluster boundaries for the given tree and files.
 ClustersAndEntries MakeClusters(const std::vector<std::string> &treeNames,
                                        const std::vector<std::string> &fileNames, const unsigned int maxTasksPerFile,
@@ -143,23 +217,7 @@ ClustersAndEntries MakeClusters(const std::vector<std::string> &treeNames,
       const auto &fileName = fileNames[i];
       const auto &treeName = treeNames[i];
 
-      std::unique_ptr<TFile> f(TFile::Open(
-         fileName.c_str(), "READ_WITHOUT_GLOBALREGISTRATION")); // need TFile::Open to load plugins if need be
-      if (!f || f->IsZombie()) {
-         const auto msg = "TTreeProcessorMT::Process: an error occurred while opening file \"" + fileName + "\"";
-         throw std::runtime_error(msg);
-      }
-      auto *t = f->Get<TTree>(treeName.c_str()); // t will be deleted by f
-
-      if (!t) {
-         const auto msg = "TTreeProcessorMT::Process: an error occurred while getting tree \"" + treeName +
-                          "\" from file \"" + fileName + "\"";
-         throw std::runtime_error(msg);
-      }
-
-      // Avoid calling TROOT::RecursiveRemove for this tree, it takes the read lock and we don't need it.
-      t->ResetBit(kMustCleanup);
-      ROOT::Internal::TreeUtils::ClearMustCleanupBits(*t->GetListOfBranches());
+      auto [f, t] = OpenTreeForProcessing(fileName, treeName); // t is owned by f
       auto clusterIter = t->GetClusterIterator(0);
       Long64_t clusterStart = 0ll, clusterEnd = 0ll;
       const Long64_t entries = t->GetEntries();
@@ -195,51 +253,11 @@ ClustersAndEntries MakeClusters(const std::vector<std::string> &treeNames,
                              "but the starting entry (" + range.first + ") is larger than the total number of " +
                              "entries (" + offset + ") in the dataset.");
 
-   // Here we "fuse" clusters together if the number of clusters is too big with respect to
-   // the number of slots, otherwise we can incur in an overhead which is big enough
-   // to make parallelisation detrimental to performance.
-   // For example, this is the case when, following a merging of many small files, a file
-   // contains a tree with many entries and with clusters of just a few entries each.
-   // Another problematic case is a high number of slots (e.g. 256) coupled with a high number
-   // of files (e.g. 1000 files): the large amount of files might result in a large amount
-   // of tasks, but the elevated concurrency level makes the little synchronization required by
-   // task initialization very expensive. In this case it's better to simply process fewer, larger tasks.
-   // Cluster-merging can help reduce the number of tasks down to a minumum of one task per file.
-   //
-   // The criterion according to which we fuse clusters together is to have around
-   // TTreeProcessorMT::GetTasksPerWorkerHint() clusters per slot.
-   // Concretely, for each file we will cap the number of tasks to ceil(GetTasksPerWorkerHint() * nWorkers / nFiles).
-
-   std::vector<std::vector<EntryRange>> eventRangesPerFile(clustersPerFile.size());
-   auto clustersPerFileIt = clustersPerFile.begin();
-   auto eventRangesPerFileIt = eventRangesPerFile.begin();
-   for (; clustersPerFileIt != clustersPerFile.end(); clustersPerFileIt++, eventRangesPerFileIt++) {
-      const auto clustersInThisFileSize = clustersPerFileIt->size();
-      const auto nFolds = clustersInThisFileSize / maxTasksPerFile;
-      // If the number of clusters is less than maxTasksPerFile
-      // we take the clusters as they are
-      if (nFolds == 0) {
-         *eventRangesPerFileIt = std::move(*clustersPerFileIt);
-         continue;
-      }
-      // Otherwise, we have to merge clusters, distributing the reminder evenly
-      // onto the first clusters
-      auto nReminderClusters = clustersInThisFileSize % maxTasksPerFile;
-      const auto &clustersInThisFile = *clustersPerFileIt;
-      for (auto i = 0ULL; i < clustersInThisFileSize; ++i) {
-         const auto start = clustersInThisFile[i].first;
-         // We lump together at least nFolds clusters, therefore
-         // we need to jump ahead of nFolds-1.
-         i += (nFolds - 1);
-         // We now add a cluster if we have some reminder left
-         if (nReminderClusters > 0) {
-            i += 1U;
-            nReminderClusters--;
-         }
-         const auto end = clustersInThisFile[i].second;
-         eventRangesPerFileIt->emplace_back(EntryRange({start, end}));
-      }
-   }
+   // Merge clusters into fewer tasks if needed, see FuseClusters()
+   std::vector<std::vector<EntryRange>> eventRangesPerFile;
+   eventRangesPerFile.reserve(clustersPerFile.size());
+   for (auto &clustersInThisFile : clustersPerFile)
+      eventRangesPerFile.emplace_back(FuseClusters(std::move(clustersInThisFile), maxTasksPerFile));
 
    return std::make_pair(std::move(eventRangesPerFile), std::move(entriesPerFile));
 }
@@ -491,34 +509,20 @@ void TTreeProcessorMT::Process(std::function<void(TTreeReader &)> func)
       fPool.Foreach(processCluster, allClusters[fileIdx]);
    };
 
-   // Per-file processing that also retrieves cluster info for a file
-   auto processFileRetrievingClusters = [&](std::size_t fileIdx) {
-      // Evaluate clusters (with local entry numbers) and number of entries for this file
-      const auto &treeNames = std::vector<std::string>({fTreeNames[fileIdx]});
-      const auto &fileNames = std::vector<std::string>({fFileNames[fileIdx]});
-      const auto clustersAndEntries = MakeClusters(treeNames, fileNames, maxTasksPerFile);
-      const auto &clusters = clustersAndEntries.first[0];
-      const auto &entries = clustersAndEntries.second[0];
-      auto processCluster = [&](const EntryRange &c) {
-         auto r = fTreeView->GetTreeReader(c.first, c.second, treeNames, fileNames, fFriendInfo, fEntryList, {entries},
-                                           fSuppressErrorsForMissingBranches);
-         func(*r);
-      };
-      fPool.Foreach(processCluster, clusters);
-   };
+   if (!shouldRetrieveAllClusters) {
+      ProcessFilesWithLocalClusters(func, maxTasksPerFile);
+      return;
+   }
 
    const auto firstNonEmpty =
       fGlobalRange.first > 0u ? std::distance(allClusters.begin(), std::find_if(allClusters.begin(), allClusters.end(),
                                                                                 [](auto &c) { return !c.empty(); }))
                               : 0u;
 
-   std::vector<std::size_t> fileIdxs(allEntries.empty() ? fFileNames.size() : allEntries.size() - firstNonEmpty);
+   std::vector<std::size_t> fileIdxs(allEntries.size() - firstNonEmpty);
    std::iota(fileIdxs.begin(), fileIdxs.end(), firstNonEmpty);
 
-   if (shouldRetrieveAllClusters)
-      fPool.Foreach(processFileUsingGlobalClusters, fileIdxs);
-   else
-      fPool.Foreach(processFileRetrievingClusters, fileIdxs);
+   fPool.Foreach(processFileUsingGlobalClusters, fileIdxs);
 
    // make sure TChains and TFiles are cleaned up since they are not globally tracked
    for (unsigned int islot = 0; islot < fTreeView.GetNSlots(); ++islot) {
@@ -527,6 +531,69 @@ void TTreeProcessorMT::Process(std::function<void(TTreeReader &)> func)
          view->Reset();
       }
    }
+}
+
+////////////////////////////////////////////////////////////////////////
+/// Process the files in the case without friends, entry lists and global entry range, in which the clusters of each
+/// file can be determined when the file is first opened, with entry numbers local to the file.
+///
+/// One worker loop per thread of the pool gets tasks from an RFileTaskScheduler: a worker opens a file, determines its
+/// clusters and processes the corresponding tasks with the same TFile and TTree. Other workers join a file (with their
+/// own TFile and TTree) only when there are no unstarted files left. Each worker keeps one file open at a time, so
+/// that every file is opened once, plus once for every worker joining it at the end of the processing.
+void TTreeProcessorMT::ProcessFilesWithLocalClusters(const std::function<void(TTreeReader &)> &func,
+                                                     unsigned int maxTasksPerFile)
+{
+   struct RFileTasks {
+      std::vector<EntryRange> fRanges;
+   };
+   using Scheduler_t = ROOT::Internal::RFileTaskScheduler<RFileTasks>;
+   Scheduler_t scheduler(fFileNames.size(), fPool.GetPoolSize());
+
+   auto workerLoop = [&](unsigned int) {
+      Scheduler_t::RWorker worker;
+      // The file and tree the worker processes; the tree is owned by the file
+      std::unique_ptr<TFile> file;
+      TTree *tree = nullptr;
+      std::shared_ptr<RFileTasks> tasks;
+      try {
+         while (auto assignment = scheduler.Next(worker)) {
+            if (assignment->fLeftFile) {
+               tree = nullptr;
+               file.reset();
+               tasks.reset();
+            }
+            const auto &fileName = fFileNames[assignment->fFileIdx];
+            const auto &treeName = fTreeNames[assignment->fFileIdx];
+            if (assignment->fKind == Scheduler_t::EKind::kOpenFile) {
+               std::tie(file, tree) = OpenTreeForProcessing(fileName, treeName);
+               std::vector<EntryRange> clusters;
+               auto clusterIter = tree->GetClusterIterator(0);
+               Long64_t clusterStart = 0;
+               const Long64_t entries = tree->GetEntries();
+               while ((clusterStart = clusterIter()) < entries)
+                  clusters.emplace_back(EntryRange{clusterStart, clusterIter.GetNextEntry()});
+               tasks = std::make_shared<RFileTasks>(RFileTasks{FuseClusters(std::move(clusters), maxTasksPerFile)});
+               scheduler.Publish(worker, tasks->fRanges.size(), tasks);
+               continue;
+            }
+            if (assignment->fFileData) {
+               // Joining a file opened by another worker
+               tasks = std::move(assignment->fFileData);
+               std::tie(file, tree) = OpenTreeForProcessing(fileName, treeName);
+            }
+            const auto &range = tasks->fRanges[assignment->fTaskIdx];
+            TTreeReader reader(tree, nullptr, /*warnAboutLongerFriends*/ false, fSuppressErrorsForMissingBranches);
+            reader.SetEntriesRange(range.first, range.second);
+            func(reader);
+         }
+      } catch (...) {
+         scheduler.Abort();
+         throw;
+      }
+   };
+
+   fPool.Foreach(workerLoop, ROOT::TSeq<unsigned int>(fPool.GetPoolSize()));
 }
 
 ////////////////////////////////////////////////////////////////////////
