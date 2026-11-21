@@ -86,12 +86,12 @@ private:
    ROOT::TreeUtils::RFriendInfo fFriendInfo;
    ROOT::TThreadExecutor fPool; ///<! Thread pool for processing.
 
-   /// Thread-local TreeViews
-   // Must be declared after fPool, for IMT to be initialized first!
-   ROOT::TThreadedObject<ROOT::Internal::TTreeView> fTreeView{TNumSlots{ROOT::GetThreadPoolSize()}};
-
    std::vector<std::string> FindTreeNames();
    void ProcessFilesWithLocalClusters(const std::function<void(TTreeReader &)> &func, unsigned int maxTasksPerFile);
+   void ProcessFilesWithGlobalClusters(const std::function<void(TTreeReader &)> &func,
+                                       const std::vector<std::vector<std::pair<Long64_t, Long64_t>>> &tasks,
+                                       const std::vector<std::vector<std::pair<Long64_t, Long64_t>>> &treeRanges,
+                                       const std::vector<Long64_t> &entries);
    static unsigned int fgTasksPerWorkerHint;
 
    std::pair<Long64_t, Long64_t> fGlobalRange{0, std::numeric_limits<Long64_t>::max()};

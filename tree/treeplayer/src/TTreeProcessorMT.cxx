@@ -302,6 +302,63 @@ ClustersAndEntries MakeClusters(const std::vector<std::string> &treeNames,
    return std::make_pair(std::move(eventRangesPerFile), std::move(entriesPerFile));
 }
 
+////////////////////////////////////////////////////////////////////////
+/// The entry range of the TTreeCache of a worker: a window of its current task and the next tasks of its run of
+/// consecutive tasks in a file, so that the cache reads ahead into the next tasks.
+///
+/// The window is set as the cache entry range by the reader of the first task of the window, and kept by the readers
+/// of the following tasks, since setting it makes the cache fill its buffer again. A new window is set when the
+/// worker gets past the window, if the task does not continue the previous one, or if the run of the worker became
+/// shorter than the window (other workers took over tasks).
+class RCacheWindow {
+   int fNTasksAhead;            ///< Tasks to read ahead into; < 0: to the end of the run; 0: none (reader's range)
+   Long64_t fEnd = -1;          ///< End of the current window, -1 if none
+   Long64_t fPreviousTaskEnd = -1;
+
+public:
+   explicit RCacheWindow(int nTasksAhead) : fNTasksAhead(nTasksAhead) {}
+
+   void Reset() { fEnd = fPreviousTaskEnd = -1; }
+
+   /// Configure the reader of a task. treeRanges are the (tree) entry ranges of the tasks of the file, runEnd is the
+   /// end (exclusive) of the run of tasks of the worker. A task without entries to process (with an entry list) does
+   /// not set up its reader, and thus cannot set the window.
+   void ConfigureReader(TTreeReader &reader, const std::vector<EntryRange> &treeRanges, std::size_t taskIdx,
+                        std::size_t runEnd, bool emptyTask = false)
+   {
+      if (fNTasksAhead == 0 || emptyTask)
+         return;
+      const auto &range = treeRanges[taskIdx];
+      const Long64_t runEndEntry = treeRanges[runEnd - 1].second;
+      const bool inWindow = range.first == fPreviousTaskEnd && range.second <= fEnd && fEnd <= runEndEntry;
+      if (inWindow) {
+         reader.SetUpdateCacheEntryRange(false);
+      } else {
+         const std::size_t lastTask =
+            fNTasksAhead < 0 ? runEnd - 1 : std::min<std::size_t>(taskIdx + fNTasksAhead, runEnd - 1);
+         fEnd = treeRanges[lastTask].second;
+         reader.SetCacheEntryRange(range.first, fEnd);
+      }
+      fPreviousTaskEnd = range.second;
+   }
+};
+
+/// Number of tasks to read ahead into with the TTreeCache, from TTreeProcessorMT.CacheAcrossTasks, and the
+/// corresponding number of tasks reserved for a worker
+int GetNTasksAhead()
+{
+   // N > 0 lets the TTreeCache of a worker read ahead across the next N tasks of its run of consecutive tasks in a
+   // file, rather than only within each task (N < 0: to the end of the run); 0 to read within each task only. These
+   // next tasks are reserved for the worker, since their baskets may have been read already (to the end of the run:
+   // only the next task). The default of 1 saves up to a third of the cache fills (vector reads, i.e. round trips for
+   // remote files) when tasks are short, without reading baskets twice.
+   return gEnv->GetValue("TTreeProcessorMT.CacheAcrossTasks", 1);
+}
+std::size_t GetNTasksReserved(int nTasksAhead)
+{
+   return nTasksAhead > 0 ? static_cast<std::size_t>(nTasksAhead) : (nTasksAhead < 0 ? 1 : 0);
+}
+
 } // anonymous namespace
 
 namespace ROOT {
@@ -530,47 +587,66 @@ void TTreeProcessorMT::Process(std::function<void(TTreeReader &)> func)
    const bool hasEntryList = fEntryList.GetN() > 0;
    const bool shouldRetrieveAllClusters = hasFriends || hasEntryList || fGlobalRange.first > 0 ||
                                           fGlobalRange.second != std::numeric_limits<Long64_t>::max();
-   ClustersAndEntries allClusterAndEntries{};
-   auto &allClusters = allClusterAndEntries.first;
-   const auto &allEntries = allClusterAndEntries.second;
-   if (shouldRetrieveAllClusters) {
-      allClusterAndEntries = MakeClusters(fTreeNames, fFileNames, maxTasksPerFile, fPool, fGlobalRange);
-      if (hasEntryList)
-         allClusters = ConvertToElistClusters(std::move(allClusters), fEntryList, fTreeNames, fFileNames, allEntries);
-   }
-
-   // Per-file processing in case we retrieved all cluster info upfront
-   auto processFileUsingGlobalClusters = [&](std::size_t fileIdx) {
-      auto processCluster = [&](const EntryRange &c) {
-         auto r = fTreeView->GetTreeReader(c.first, c.second, fTreeNames, fFileNames, fFriendInfo, fEntryList,
-                                           allEntries, fSuppressErrorsForMissingBranches);
-         func(*r);
-      };
-      fPool.Foreach(processCluster, allClusters[fileIdx]);
-   };
-
    if (!shouldRetrieveAllClusters) {
       ProcessFilesWithLocalClusters(func, maxTasksPerFile);
       return;
    }
 
-   const auto firstNonEmpty =
-      fGlobalRange.first > 0u ? std::distance(allClusters.begin(), std::find_if(allClusters.begin(), allClusters.end(),
-                                                                                [](auto &c) { return !c.empty(); }))
-                              : 0u;
+   auto [allClusters, allEntries] = MakeClusters(fTreeNames, fFileNames, maxTasksPerFile, fPool, fGlobalRange);
+   // The (global) entry ranges of the tasks, for the TTreeCache: with an entry list, the tasks are ranges of entry
+   // list positions instead, one per cluster
+   auto treeRanges = allClusters;
+   if (hasEntryList)
+      allClusters = ConvertToElistClusters(std::move(allClusters), fEntryList, fTreeNames, fFileNames, allEntries);
+   ProcessFilesWithGlobalClusters(func, allClusters, treeRanges, allEntries);
+}
 
-   std::vector<std::size_t> fileIdxs(allEntries.size() - firstNonEmpty);
-   std::iota(fileIdxs.begin(), fileIdxs.end(), firstNonEmpty);
+////////////////////////////////////////////////////////////////////////
+/// Process the files in the case with friends, an entry list or a global entry range, in which the tasks of all
+/// files (with global entry numbers, or entry list positions) were determined before.
+///
+/// As for ProcessFilesWithLocalClusters(), one worker loop per thread gets tasks from an RFileTaskScheduler, which
+/// keeps workers on files: each worker processes its tasks with its own TChain over all files (with the friends and
+/// the entry list), which thus switches files only when the worker moves to another file.
+void TTreeProcessorMT::ProcessFilesWithGlobalClusters(
+   const std::function<void(TTreeReader &)> &func, const std::vector<std::vector<std::pair<Long64_t, Long64_t>>> &tasks,
+   const std::vector<std::vector<std::pair<Long64_t, Long64_t>>> &treeRanges, const std::vector<Long64_t> &entries)
+{
+   struct RNoFileData {
+   };
+   using Scheduler_t = ROOT::Internal::RFileTaskScheduler<RNoFileData>;
+   const int nTasksAhead = GetNTasksAhead();
+   // tasks has an element per file up to the end of the global entry range
+   Scheduler_t scheduler(tasks.size(), fPool.GetPoolSize(), GetNTasksReserved(nTasksAhead));
+   for (std::size_t f = 0; f < tasks.size(); ++f)
+      scheduler.PublishInAdvance(f, tasks[f].size());
+   const bool hasEntryList = fEntryList.GetN() > 0;
 
-   fPool.Foreach(processFileUsingGlobalClusters, fileIdxs);
-
-   // make sure TChains and TFiles are cleaned up since they are not globally tracked
-   for (unsigned int islot = 0; islot < fTreeView.GetNSlots(); ++islot) {
-      ROOT::Internal::TTreeView *view = fTreeView.GetAtSlotRaw(islot);
-      if (view != nullptr) {
-         view->Reset();
+   auto workerLoop = [&](unsigned int) {
+      Scheduler_t::RWorker worker;
+      ROOT::Internal::TTreeView view;
+      RCacheWindow cacheWindow(nTasksAhead);
+      try {
+         while (auto assignment = scheduler.Next(worker)) {
+            R__ASSERT(assignment->fKind == Scheduler_t::EKind::kProcessTask);
+            if (assignment->fLeftFile)
+               cacheWindow.Reset();
+            const auto &range = tasks[assignment->fFileIdx][assignment->fTaskIdx];
+            auto reader = view.GetTreeReader(range.first, range.second, fTreeNames, fFileNames, fFriendInfo,
+                                             fEntryList, entries, fSuppressErrorsForMissingBranches);
+            // With an entry list, a task (cluster) may have no entries to process
+            cacheWindow.ConfigureReader(*reader, treeRanges[assignment->fFileIdx], assignment->fTaskIdx,
+                                        assignment->fRunEnd, hasEntryList && range.first == range.second);
+            func(*reader);
+         }
+      } catch (...) {
+         scheduler.Abort();
+         throw;
       }
-   }
+      // the TChain and TFiles of the view are not globally tracked, they are cleaned up with the view
+   };
+
+   fPool.Foreach(workerLoop, ROOT::TSeq<unsigned int>(fPool.GetPoolSize()));
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -588,15 +664,8 @@ void TTreeProcessorMT::ProcessFilesWithLocalClusters(const std::function<void(TT
       std::vector<EntryRange> fRanges;
    };
    using Scheduler_t = ROOT::Internal::RFileTaskScheduler<RFileTasks>;
-   // TTreeProcessorMT.CacheAcrossTasks: N > 0 lets the TTreeCache of a worker read ahead across the next N tasks of
-   // its run of consecutive tasks in a file, rather than only within each task (N < 0: to the end of the run); 0 to
-   // read within each task only. These next tasks are reserved for the worker, since their baskets may have been read
-   // already (to the end of the run: only the next task). The default of 1 saves up to a third of the cache fills
-   // (vector reads, i.e. round trips for remote files) when tasks are short, without reading baskets twice.
-   const int nTasksAhead = gEnv->GetValue("TTreeProcessorMT.CacheAcrossTasks", 1);
-   const bool cacheAcrossTasks = nTasksAhead != 0;
-   Scheduler_t scheduler(fFileNames.size(), fPool.GetPoolSize(),
-                         nTasksAhead > 0 ? static_cast<std::size_t>(nTasksAhead) : (nTasksAhead < 0 ? 1 : 0));
+   const int nTasksAhead = GetNTasksAhead();
+   Scheduler_t scheduler(fFileNames.size(), fPool.GetPoolSize(), GetNTasksReserved(nTasksAhead));
 
    auto workerLoop = [&](unsigned int) {
       Scheduler_t::RWorker worker;
@@ -604,16 +673,14 @@ void TTreeProcessorMT::ProcessFilesWithLocalClusters(const std::function<void(TT
       std::unique_ptr<TFile> file;
       TTree *tree = nullptr;
       std::shared_ptr<RFileTasks> tasks;
-      // With cacheAcrossTasks: the entry range set for the TTreeCache, and the end of the previous task
-      Long64_t cacheRangeEnd = -1;
-      Long64_t previousTaskEnd = -1;
+      RCacheWindow cacheWindow(nTasksAhead);
       try {
          while (auto assignment = scheduler.Next(worker)) {
             if (assignment->fLeftFile) {
                tree = nullptr;
                file.reset();
                tasks.reset();
-               cacheRangeEnd = previousTaskEnd = -1;
+               cacheWindow.Reset();
             }
             const auto &fileName = fFileNames[assignment->fFileIdx];
             const auto &treeName = fTreeNames[assignment->fFileIdx];
@@ -631,29 +698,7 @@ void TTreeProcessorMT::ProcessFilesWithLocalClusters(const std::function<void(TT
             const auto &range = tasks->fRanges[assignment->fTaskIdx];
             TTreeReader reader(tree, nullptr, /*warnAboutLongerFriends*/ false, fSuppressErrorsForMissingBranches);
             reader.SetEntriesRange(range.first, range.second);
-            if (cacheAcrossTasks) {
-               // Set the cache range to a window of the run of tasks of the worker: this task and the next
-               // nTasksAhead ones (or to the end of the run). Keep it unchanged while the worker continues with the
-               // tasks of the window, since setting it makes the cache fill its buffer again; set a new window when
-               // the worker gets past it, if the task does not continue the previous one, or if the run became shorter
-               // than the window (other workers took over tasks).
-               const Long64_t runEnd = tasks->fRanges[assignment->fRunEnd - 1].second;
-               const bool inWindow =
-                  range.first == previousTaskEnd && range.second <= cacheRangeEnd && cacheRangeEnd <= runEnd;
-               if (!inWindow) {
-                  const std::size_t lastTask =
-                     nTasksAhead < 0 ? assignment->fRunEnd - 1
-                                     : std::min<std::size_t>(assignment->fTaskIdx + nTasksAhead, assignment->fRunEnd - 1);
-                  const Long64_t windowEnd = tasks->fRanges[lastTask].second;
-                  cacheRangeEnd = -1;
-                  if (tree->GetReadCache(tree->GetCurrentFile(), true)) {
-                     tree->SetCacheEntryRange(range.first, windowEnd);
-                     cacheRangeEnd = windowEnd;
-                  }
-               }
-               reader.SetUpdateCacheEntryRange(cacheRangeEnd < 0);
-               previousTaskEnd = range.second;
-            }
+            cacheWindow.ConfigureReader(reader, tasks->fRanges, assignment->fTaskIdx, assignment->fRunEnd);
             func(reader);
          }
       } catch (...) {

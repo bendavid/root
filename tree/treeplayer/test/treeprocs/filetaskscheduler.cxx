@@ -229,3 +229,52 @@ TEST(RFileTaskScheduler, ReservedTasks)
       seen.insert(b->fTaskIdx);
    EXPECT_EQ(6u, seen.size());
 }
+
+TEST(RFileTaskScheduler, PublishedInAdvance)
+{
+   // Tasks known before the processing: no file is opened by a worker; every task is processed once, workers keep to
+   // one file at a time, and files without tasks are skipped
+   using Scheduler_t = RFileTaskScheduler<RFileData>;
+   const std::vector<std::size_t> nTasks{0, 7, 0, 3, 12, 1, 0};
+   for (unsigned nWorkers : {1u, 3u, 16u}) {
+      Scheduler_t scheduler(nTasks.size(), nWorkers, /*nReserved=*/1);
+      for (std::size_t f = 0; f < nTasks.size(); ++f)
+         scheduler.PublishInAdvance(f, nTasks[f], std::make_shared<RFileData>(RFileData{f}));
+      std::mutex mutex;
+      std::vector<std::vector<int>> processed(nTasks.size());
+      for (std::size_t f = 0; f < nTasks.size(); ++f)
+         processed[f].resize(nTasks[f], 0);
+      int nViolations = 0;
+      int nOpens = 0;
+      std::vector<std::thread> threads;
+      for (unsigned w = 0; w < nWorkers; ++w) {
+         threads.emplace_back([&]() {
+            Scheduler_t::RWorker worker;
+            std::size_t handle = Scheduler_t::kInvalid;
+            while (auto a = scheduler.Next(worker)) {
+               std::lock_guard<std::mutex> lock(mutex);
+               if (a->fKind == Scheduler_t::EKind::kOpenFile)
+                  nOpens++;
+               if (a->fLeftFile)
+                  handle = Scheduler_t::kInvalid;
+               if (a->fFileData) {
+                  EXPECT_EQ(a->fFileIdx, a->fFileData->fFileIdx);
+                  if (handle != Scheduler_t::kInvalid)
+                     nViolations++;
+                  handle = a->fFileIdx;
+               }
+               if (handle != a->fFileIdx)
+                  nViolations++;
+               processed[a->fFileIdx][a->fTaskIdx]++;
+            }
+         });
+      }
+      for (auto &t : threads)
+         t.join();
+      EXPECT_EQ(0, nOpens);
+      EXPECT_EQ(0, nViolations);
+      for (const auto &file : processed)
+         for (auto n : file)
+            EXPECT_EQ(1, n);
+   }
+}
