@@ -374,7 +374,8 @@ ACLiC.Linkdef:          _linkdef
 #TFile.Recover:      no
 
 # Control the usage of asynchronous reading capabilities eventually
-# supported by the underlying TFile implementation. Default is yes.
+# supported by the underlying TFile implementation (on Linux, also for
+# local files via posix_fadvise). Default is yes.
 #TFile.AsyncReading:     no
 
 # Control the usage of asynchronous prefetching capabilities irrespective

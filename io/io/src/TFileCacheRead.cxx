@@ -824,7 +824,7 @@ void TFileCacheRead::SetEnablePrefetchingImpl(Bool_t setPrefetching)
       fAsyncReading = kFALSE;
    }
    else {
-      fAsyncReading = gEnv->GetValue("TFile.AsyncReading", 0);
+      fAsyncReading = gEnv->GetValue("TFile.AsyncReading", 1);
       if (fAsyncReading) {
          // Check if asynchronous reading is supported by this TFile specialization
          fAsyncReading = kFALSE;

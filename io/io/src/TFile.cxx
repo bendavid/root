@@ -594,7 +594,7 @@ TFile::TFile(const char *fname1, Option_t *option, const char *ftitle, Int_t com
       // kernel read-ahead, which would otherwise expand the reads (e.g. to whole 4 MiB objects on CephFS). Only for the
       // files opened with READ_WITHOUT_GLOBALREGISTRATION, i.e. by TTreeProcessorMT, RDataFrame and the TChains they
       // use, which read the trees through a TTreeCache: other reads keep the kernel read-ahead.
-      if (!fGlobalRegistration && gEnv->GetValue("TFile.AsyncReading", 0))
+      if (!fGlobalRegistration && gEnv->GetValue("TFile.AsyncReading", 1))
          posix_fadvise(fD, 0, 0, POSIX_FADV_RANDOM);
 #endif
    }
@@ -4892,7 +4892,7 @@ Bool_t TFile::Cp(const char *src, const char *dst, Bool_t progressbar,
 
 //______________________________________________________________________________
 // Asynchronous reading via posix_fadvise(POSIX_FADV_WILLNEED) on Linux, used by TFileCacheRead (e.g. the TTreeCache)
-// if enabled with `TFile.AsyncReading: 1` in .rootrc. It was previously disabled on Linux (a 10% penalty was reported
+// unless disabled with `TFile.AsyncReading: 0` in .rootrc (enabled by default). It was previously disabled on Linux (a 10% penalty was reported
 // on optimized files, and it disturbs TTreePerfStats); on high-latency storage, it lets the kernel fetch the blocks of
 // a cache fill concurrently instead of one after the other.
 #if defined(R__LINUX) && !defined(R__WINGCC)
