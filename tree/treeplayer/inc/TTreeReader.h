@@ -234,6 +234,11 @@ public:
    /// \return a pair contained the begin and end entry numbers.
    std::pair<Long64_t, Long64_t> GetEntriesRange() const { return std::make_pair(fBeginEntry, fEndEntry); }
 
+   /// Set whether the entry range of the TTreeCache is set to the entry range of the reader when the reader sets up
+   /// its branches (default). Set to false if the caller manages the entry range of the cache, e.g. to let it read
+   /// ahead beyond the end of the entry range of the reader.
+   void SetUpdateCacheEntryRange(bool value) { fUpdateCacheEntryRange = value; }
+
    /// Restart a Next() loop from entry 0 (of TEntryList index 0 of fEntryList is set).
    void Restart();
 
@@ -333,6 +338,7 @@ private:
    Long64_t fBeginEntry = 0LL;                ///< This allows us to propagate the range to the TTreeCache
    bool fProxiesSet = false;                  ///< True if the proxies have been set, false otherwise
    bool fSetEntryBaseCallingLoadTree = false; ///< True if during the LoadTree execution triggered by SetEntryBase.
+   bool fUpdateCacheEntryRange = true;        ///< Whether to set the entry range of the TTreeCache to fBeginEntry, fEndEntry
 
    // Flag to activate or deactivate warnings in case the friend trees have
    // more entries than the main one. In some cases we may want to deactivate
