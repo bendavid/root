@@ -23,11 +23,13 @@ of a ROOT::TThreadedObject, so that each thread works with its own TFile and TTr
 objects.
 */
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <tuple>
 #include <utility>
 
+#include "TEnv.h"
 #include "TROOT.h"
 #include "ROOT/TTreeProcessorMT.hxx"
 #include "ROOT/RFileTaskScheduler.hxx"
@@ -548,7 +550,15 @@ void TTreeProcessorMT::ProcessFilesWithLocalClusters(const std::function<void(TT
       std::vector<EntryRange> fRanges;
    };
    using Scheduler_t = ROOT::Internal::RFileTaskScheduler<RFileTasks>;
-   Scheduler_t scheduler(fFileNames.size(), fPool.GetPoolSize());
+   // TTreeProcessorMT.CacheAcrossTasks: N > 0 lets the TTreeCache of a worker read ahead across the next N tasks of
+   // its run of consecutive tasks in a file, rather than only within each task (N < 0: to the end of the run); 0 to
+   // read within each task only. These next tasks are reserved for the worker, since their baskets may have been read
+   // already (to the end of the run: only the next task). The default of 1 saves up to a third of the cache fills
+   // (vector reads, i.e. round trips for remote files) when tasks are short, without reading baskets twice.
+   const int nTasksAhead = gEnv->GetValue("TTreeProcessorMT.CacheAcrossTasks", 1);
+   const bool cacheAcrossTasks = nTasksAhead != 0;
+   Scheduler_t scheduler(fFileNames.size(), fPool.GetPoolSize(),
+                         nTasksAhead > 0 ? static_cast<std::size_t>(nTasksAhead) : (nTasksAhead < 0 ? 1 : 0));
 
    auto workerLoop = [&](unsigned int) {
       Scheduler_t::RWorker worker;
@@ -556,12 +566,16 @@ void TTreeProcessorMT::ProcessFilesWithLocalClusters(const std::function<void(TT
       std::unique_ptr<TFile> file;
       TTree *tree = nullptr;
       std::shared_ptr<RFileTasks> tasks;
+      // With cacheAcrossTasks: the entry range set for the TTreeCache, and the end of the previous task
+      Long64_t cacheRangeEnd = -1;
+      Long64_t previousTaskEnd = -1;
       try {
          while (auto assignment = scheduler.Next(worker)) {
             if (assignment->fLeftFile) {
                tree = nullptr;
                file.reset();
                tasks.reset();
+               cacheRangeEnd = previousTaskEnd = -1;
             }
             const auto &fileName = fFileNames[assignment->fFileIdx];
             const auto &treeName = fTreeNames[assignment->fFileIdx];
@@ -585,6 +599,29 @@ void TTreeProcessorMT::ProcessFilesWithLocalClusters(const std::function<void(TT
             const auto &range = tasks->fRanges[assignment->fTaskIdx];
             TTreeReader reader(tree, nullptr, /*warnAboutLongerFriends*/ false, fSuppressErrorsForMissingBranches);
             reader.SetEntriesRange(range.first, range.second);
+            if (cacheAcrossTasks) {
+               // Set the cache range to a window of the run of tasks of the worker: this task and the next
+               // nTasksAhead ones (or to the end of the run). Keep it unchanged while the worker continues with the
+               // tasks of the window, since setting it makes the cache fill its buffer again; set a new window when
+               // the worker gets past it, if the task does not continue the previous one, or if the run became shorter
+               // than the window (other workers took over tasks).
+               const Long64_t runEnd = tasks->fRanges[assignment->fRunEnd - 1].second;
+               const bool inWindow =
+                  range.first == previousTaskEnd && range.second <= cacheRangeEnd && cacheRangeEnd <= runEnd;
+               if (!inWindow) {
+                  const std::size_t lastTask =
+                     nTasksAhead < 0 ? assignment->fRunEnd - 1
+                                     : std::min<std::size_t>(assignment->fTaskIdx + nTasksAhead, assignment->fRunEnd - 1);
+                  const Long64_t windowEnd = tasks->fRanges[lastTask].second;
+                  cacheRangeEnd = -1;
+                  if (tree->GetReadCache(tree->GetCurrentFile(), true)) {
+                     tree->SetCacheEntryRange(range.first, windowEnd);
+                     cacheRangeEnd = windowEnd;
+                  }
+               }
+               reader.SetUpdateCacheEntryRange(cacheRangeEnd < 0);
+               previousTaskEnd = range.second;
+            }
             func(reader);
          }
       } catch (...) {
