@@ -50,6 +50,9 @@ its next task(s) while processing the current one, taking these tasks over would
 The data published for a file (FileData_t, e.g. the tasks and a prototype of the file handle) is passed to every worker
 that joins the file; the scheduler releases its reference once all the tasks of the file are assigned.
 
+The tasks of files can also be published in advance with PublishInAdvance(), e.g. if they were determined before the
+processing starts: a worker then starts such a file directly with its first task, rather than opening it.
+
 If a worker loop fails, it must call Abort() so that the other worker loops terminate.
 */
 template <typename FileData_t>
@@ -95,6 +98,7 @@ private:
       std::vector<RRun> fRuns;
       std::shared_ptr<FileData_t> fData;
       std::size_t fNUnassigned = 0;
+      bool fPublishedInAdvance = false;
    };
 
    std::mutex fMutex;
@@ -194,7 +198,15 @@ public:
          if (onFile && worker.fRunIdx != kInvalid && fFiles[worker.fFileIdx].fRuns[worker.fRunIdx].Size() > 0)
             return Take(worker, /*leftFile=*/false, /*newOnFile=*/false);
 
-         // 2. An unstarted file
+         // 2. An unstarted file (if its tasks were published in advance: start with its first task)
+         while (fNextUnstarted < fFiles.size() && fFiles[fNextUnstarted].fPublishedInAdvance) {
+            const auto fileIdx = fNextUnstarted++;
+            if (fFiles[fileIdx].fRuns.empty())
+               continue; // no tasks
+            worker.fFileIdx = fileIdx;
+            worker.fRunIdx = 0;
+            return Take(worker, /*leftFile=*/onFile, /*newOnFile=*/true);
+         }
          if (fNextUnstarted < fFiles.size()) {
             RAssignment a;
             a.fKind = EKind::kOpenFile;
@@ -258,6 +270,23 @@ public:
          }
       }
       fCvWork.notify_all();
+   }
+
+   /// Publish the tasks of a file before the workers start: no worker is assigned to open it. Must be called before
+   /// the first call of Next().
+   void PublishInAdvance(std::size_t fileIdx, std::size_t nTasks, std::shared_ptr<FileData_t> data = nullptr)
+   {
+      std::lock_guard<std::mutex> lock(fMutex);
+      auto &file = fFiles[fileIdx];
+      file.fPublishedInAdvance = true;
+      ++fNPublished;
+      fNTasksPublished += nTasks;
+      if (nTasks > 0) {
+         file.fRuns.push_back(RRun{0, nTasks});
+         file.fNUnassigned = nTasks;
+         fNUnassigned += nTasks;
+         file.fData = std::move(data);
+      }
    }
 
    /// Stop handing out work, e.g. after an error in one of the worker loops
