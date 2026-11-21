@@ -231,6 +231,22 @@ TFile::TFile() : TDirectoryFile(), fCompress(ROOT::RCompressionSetting::EAlgorit
       Info("TFile", "default ctor");
 }
 
+namespace {
+/// With asynchronous reading (TFile.AsyncReading), the read cache announces the blocks it needs (see
+/// TFile::ReadBufferAsync()): disable the kernel read-ahead for a plain TFile opened for reading or update, which would
+/// otherwise expand the reads (e.g. to whole 4 MiB objects on CephFS).
+void DiscourageReadAheadForAsyncReading(const TFile &file, int fd)
+{
+#if defined(R__LINUX) && !defined(R__WINGCC)
+   if (fd >= 0 && file.IsA() == TFile::Class() && gEnv->GetValue("TFile.AsyncReading", 0))
+      posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
+#else
+   (void)file;
+   (void)fd;
+#endif
+}
+} // anonymous namespace
+
 ////////////////////////////////////////////////////////////////////////////////
 /// Opens or creates a local ROOT file.
 ///
@@ -577,6 +593,8 @@ TFile::TFile(const char *fname1, Option_t *option, const char *ftitle, Int_t com
          return;
       }
       fWritable = kTRUE;
+      if (update)
+         DiscourageReadAheadForAsyncReading(*this, fD);
    } else {
 #ifndef WIN32
       fD = TFile::SysOpen(fname.Data(), O_RDONLY, 0666);
@@ -589,12 +607,7 @@ TFile::TFile(const char *fname1, Option_t *option, const char *ftitle, Int_t com
          return;
       }
       fWritable = kFALSE;
-#if defined(R__LINUX) && !defined(R__WINGCC)
-      // With asynchronous reading, the read cache announces the blocks it needs (see ReadBufferAsync()): disable the
-      // kernel read-ahead, which would otherwise expand the reads (e.g. to whole 4 MiB objects on CephFS)
-      if (gEnv->GetValue("TFile.AsyncReading", 0))
-         posix_fadvise(fD, 0, 0, POSIX_FADV_RANDOM);
-#endif
+      DiscourageReadAheadForAsyncReading(*this, fD);
    }
 
    // calling virtual methods from constructor not a good idea, but it is how code was developed
@@ -2313,6 +2326,7 @@ Int_t TFile::ReOpen(Option_t *mode)
          return -1;
       }
       SetWritable(kFALSE);
+      DiscourageReadAheadForAsyncReading(*this, fD);
 
    } else {
       // switch to UPDATE mode
@@ -2335,6 +2349,7 @@ Int_t TFile::ReOpen(Option_t *mode)
          return -1;
       }
       SetWritable(kTRUE);
+      DiscourageReadAheadForAsyncReading(*this, fD);
 
       fFree = new TList;
       if (fSeekFree > fBEGIN)
