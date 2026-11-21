@@ -1,4 +1,7 @@
 #include <TFile.h>
+#include <TEnv.h>
+#include <TEntryList.h>
+#include <TChain.h>
 #include <TParameter.h>
 #include <TTree.h>
 #include <TSystem.h>
@@ -15,6 +18,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <random>
 #include <string>
 #include <thread>
@@ -644,4 +648,153 @@ TEST(TreeProcessorMT, GlobalRangeConcurrentClusterDiscovery)
    }
 
    DeleteFiles(filenames);
+}
+
+namespace {
+/// Write nFiles files with a tree "t" (branch v: the global entry number) and nFiles files with a friend tree "f"
+/// (branch w = 2 * v), with clusters of 20 entries, i.e. several tasks per file
+void WriteFilesWithClusters(const std::vector<std::string> &mainFiles, const std::vector<std::string> &friendFiles,
+                            int nEntriesPerFile)
+{
+   int v = 0;
+   for (std::size_t i = 0; i < mainFiles.size(); ++i) {
+      TFile fm(mainFiles[i].c_str(), "recreate");
+      TTree t("t", "t");
+      t.SetAutoFlush(20);
+      int vv = 0;
+      t.Branch("v", &vv);
+      TFile ff(friendFiles[i].c_str(), "recreate");
+      TTree f("f", "f");
+      f.SetAutoFlush(20);
+      int w = 0;
+      f.Branch("w", &w);
+      for (int e = 0; e < nEntriesPerFile; ++e, ++v) {
+         vv = v;
+         w = 2 * v;
+         t.Fill();
+         f.Fill();
+      }
+      fm.cd();
+      t.Write();
+      ff.cd();
+      f.Write();
+   }
+}
+
+struct RResultCounts {
+   long fCount = 0;
+   long fSum = 0;
+   long fMismatches = 0; ///< entries for which the friend value does not match
+};
+
+RResultCounts ProcessWithFriendCheck(ROOT::TTreeProcessorMT &tp, bool withFriend)
+{
+   std::atomic_long count{0}, sum{0}, mismatches{0};
+   tp.Process([&](TTreeReader &r) {
+      TTreeReaderValue<int> v(r, "v");
+      std::unique_ptr<TTreeReaderValue<int>> w;
+      if (withFriend)
+         w = std::make_unique<TTreeReaderValue<int>>(r, "f.w");
+      while (r.Next()) {
+         ++count;
+         sum += *v;
+         if (w && **w != 2 * *v)
+            ++mismatches;
+      }
+   });
+   return {count.load(), sum.load(), mismatches.load()};
+}
+} // anonymous namespace
+
+TEST(TreeProcessorMT, GlobalClustersWithFriendsEntryListsRanges)
+{
+   // The global-cluster path (friends, entry lists, global entry ranges) with files of several clusters, for the
+   // different settings of the TTreeCache read-ahead window across tasks
+   const int nFiles = 6;
+   const int nEntriesPerFile = 200;
+   const long nEntries = nFiles * nEntriesPerFile;
+   std::vector<std::string> mainFiles, friendFiles;
+   for (int i = 0; i < nFiles; ++i) {
+      mainFiles.emplace_back("treeprocmt_globalclusters_t" + std::to_string(i) + ".root");
+      friendFiles.emplace_back("treeprocmt_globalclusters_f" + std::to_string(i) + ".root");
+   }
+   WriteFilesWithClusters(mainFiles, friendFiles, nEntriesPerFile);
+
+   const auto oldSetting = gEnv->GetValue("TTreeProcessorMT.CacheAcrossTasks", 1);
+   for (int nTasksAhead : {0, 1, 2, -1}) {
+      gEnv->SetValue("TTreeProcessorMT.CacheAcrossTasks", nTasksAhead);
+      SCOPED_TRACE("TTreeProcessorMT.CacheAcrossTasks " + std::to_string(nTasksAhead));
+
+      TChain c("t");
+      TChain cf("f");
+      for (int i = 0; i < nFiles; ++i) {
+         c.Add(mainFiles[i].c_str());
+         cf.Add(friendFiles[i].c_str());
+      }
+      c.AddFriend(&cf);
+
+      {
+         // Friends
+         ROOT::TTreeProcessorMT tp(c, 4u);
+         auto r = ProcessWithFriendCheck(tp, true);
+         EXPECT_EQ(nEntries, r.fCount);
+         EXPECT_EQ(nEntries * (nEntries - 1) / 2, r.fSum);
+         EXPECT_EQ(0, r.fMismatches);
+      }
+      long expectedCount = 0, expectedSum = 0;
+      for (long e = 0; e < nEntries; ++e) {
+         if (e % 3 == 0 || (e > 300 && e < 500)) {
+            ++expectedCount;
+            expectedSum += e;
+         }
+      }
+      {
+         // Entry list with a sub-list per tree (local entry numbers), with friends
+         std::vector<std::unique_ptr<TEntryList>> sublists;
+         TEntryList elist;
+         for (int i = 0; i < nFiles; ++i) {
+            sublists.emplace_back(std::make_unique<TEntryList>("e", "e", "t", mainFiles[i].c_str()));
+            for (long local = 0; local < nEntriesPerFile; ++local) {
+               const long e = i * nEntriesPerFile + local;
+               if (e % 3 == 0 || (e > 300 && e < 500))
+                  sublists.back()->Enter(local);
+            }
+            elist.Add(sublists.back().get());
+         }
+         // associates the sub-lists with the trees of the chain, as required (see TEntryList)
+         c.SetEntryList(&elist);
+         ROOT::TTreeProcessorMT tp(c, elist, 4u);
+         auto r = ProcessWithFriendCheck(tp, true);
+         EXPECT_EQ(expectedCount, r.fCount);
+         EXPECT_EQ(expectedSum, r.fSum);
+         EXPECT_EQ(0, r.fMismatches);
+         c.SetEntryList(nullptr);
+      }
+      {
+         // Entry list with global entry numbers
+         TChain c2("t");
+         for (int i = 0; i < nFiles; ++i)
+            c2.Add(mainFiles[i].c_str());
+         TEntryList elist("elist2", "elist2");
+         for (long e = 0; e < nEntries; ++e)
+            if (e % 3 == 0 || (e > 300 && e < 500))
+               elist.Enter(e);
+         ROOT::TTreeProcessorMT tp(c2, elist, 4u);
+         auto r = ProcessWithFriendCheck(tp, false);
+         EXPECT_EQ(expectedCount, r.fCount);
+         EXPECT_EQ(expectedSum, r.fSum);
+      }
+      {
+         // Global entry range starting and ending within files, with friends
+         ROOT::TTreeProcessorMT tp(c, 4u, {150, 1050});
+         auto r = ProcessWithFriendCheck(tp, true);
+         EXPECT_EQ(900, r.fCount);
+         EXPECT_EQ((150 + 1049) * 900 / 2, r.fSum);
+         EXPECT_EQ(0, r.fMismatches);
+      }
+   }
+   gEnv->SetValue("TTreeProcessorMT.CacheAcrossTasks", oldSetting);
+
+   DeleteFiles(mainFiles);
+   DeleteFiles(friendFiles);
 }

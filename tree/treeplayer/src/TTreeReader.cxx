@@ -414,7 +414,9 @@ bool TTreeReader::SetProxies()
    if (fProxiesSet) {
       const auto curFile = fTree->GetCurrentFile();
       if (curFile && fTree->GetTree()->GetReadCache(curFile, true)) {
-         if (fUpdateCacheEntryRange && !(-1LL == fEndEntry && 0ULL == fBeginEntry)) {
+         if (fCacheEntryRangeMode == kCacheRangeGiven) {
+            fTree->SetCacheEntryRange(fCacheEntryRange.first, fCacheEntryRange.second);
+         } else if (fCacheEntryRangeMode == kCacheRangeReader && !(-1LL == fEndEntry && 0ULL == fBeginEntry)) {
             // We need to avoid to pass -1 as end entry to the SetCacheEntryRange method
             const auto lastEntry = (-1LL == fEndEntry) ? fTree->GetEntriesFast() : fEndEntry;
             fTree->SetCacheEntryRange(fBeginEntry, lastEntry);
