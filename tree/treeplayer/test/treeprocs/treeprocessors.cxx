@@ -8,6 +8,7 @@
 #include <ROOT/TTreeProcessorMP.hxx>
 #endif
 #include <ROOT/TTreeProcessorMT.hxx>
+#include <ROOT/TestSupport.hxx>
 
 #include "gtest/gtest.h"
 
@@ -588,4 +589,59 @@ TEST(TreeProcessorMT, TreesInSameFile)
    // Clean-up
    gSystem->Unlink(fname.c_str());
    ROOT::DisableImplicitMT();
+}
+
+TEST(TreeProcessorMT, GlobalRangeConcurrentClusterDiscovery)
+{
+   // With a global entry range, the clusters of the files are determined before processing, opening the files
+   // concurrently in batches: the result is the same as opening them in order, and files beyond the end of the range
+   // that cannot be opened are not an error (as before), whereas files within the range are
+   const auto nFiles = 20u;
+   const std::string treename = "t";
+   std::vector<std::string> filenames;
+   for (auto i = 0u; i < nFiles; ++i)
+      filenames.emplace_back("treeprocmt_globalrange" + std::to_string(i) + ".root");
+   WriteFiles(std::vector<std::string>(nFiles, treename), filenames);
+
+   auto countEntries = [](ROOT::TTreeProcessorMT &proc) {
+      std::atomic_int count(0);
+      std::atomic_long sum(0);
+      proc.Process([&](TTreeReader &r) {
+         TTreeReaderValue<int> v(r, "v");
+         while (r.Next()) {
+            sum += *v;
+            ++count;
+         }
+      });
+      return std::make_pair(count.load(), sum.load());
+   };
+
+   std::vector<std::string_view> fnames(filenames.begin(), filenames.end());
+   {
+      // A range spanning several batches (of 2 files, the number of threads), starting and ending within files
+      ROOT::TTreeProcessorMT proc(fnames, treename, 2u, {15, 175});
+      auto [count, sum] = countEntries(proc);
+      EXPECT_EQ(160, count);
+      EXPECT_EQ((16 + 175) * 160 / 2, sum); // values 16..175
+   }
+   {
+      // The range ends in the first file; the missing file is beyond it, in the same batch: opening it fails (with
+      // an error message), but that is not an error of the processing
+      ROOT::TestSupport::CheckDiagsRAII diags;
+      diags.optionalDiag(kError, "TFile::TFile", "treeprocmt_globalrange_missing.root does not exist", false);
+      std::vector<std::string_view> withMissing{fnames[0], fnames[1], "treeprocmt_globalrange_missing.root"};
+      ROOT::TTreeProcessorMT proc(withMissing, treename, 4u, {0, 15});
+      auto [count, sum] = countEntries(proc);
+      EXPECT_EQ(15, count);
+   }
+   {
+      // The missing file is within the range
+      ROOT::TestSupport::CheckDiagsRAII diags;
+      diags.requiredDiag(kError, "TFile::TFile", "treeprocmt_globalrange_missing.root does not exist", false);
+      std::vector<std::string_view> withMissing{fnames[0], "treeprocmt_globalrange_missing.root", fnames[1]};
+      ROOT::TTreeProcessorMT proc(withMissing, treename, 4u, {0, 25});
+      EXPECT_THROW(countEntries(proc), std::runtime_error);
+   }
+
+   DeleteFiles(filenames);
 }
