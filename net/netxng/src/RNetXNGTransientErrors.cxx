@@ -18,10 +18,11 @@ bool ROOT::Internal::IsTransientXRootDError(std::uint16_t code, std::uint32_t er
 {
    using namespace XrdCl;
    if (code == errErrorResponse) {
-      // An error response from the server. E.g. kXR_noserver: the redirector cannot reach a data server holding the
-      // file ("Network is unreachable"), which the XRootD client does not retry by itself.
+      // An error response from the server. Not kXR_noserver: the redirector has no data server holding the file
+      // available (e.g. for EOS, all the file systems with replicas of the file are offline), which typically lasts
+      // longer than the retries. (Short unavailabilities of data servers are handled by the XRootD client: it gets
+      // connection errors from them, and retries at the redirector.)
       switch (errNo) {
-      case kXR_noserver:
       case kXR_Overloaded:
       case kXR_ServerError:
       case kXR_IOError:

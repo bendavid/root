@@ -44,9 +44,9 @@ TEST(TNetXNGFileTest, DoubleClose)
 TEST(TNetXNGFileTest, TransientErrors)
 {
    using ROOT::Internal::IsTransientXRootDError;
-   // Error responses of the server: an unreachable data server or an overloaded server are transient, a missing file
-   // or missing permissions are not
-   EXPECT_TRUE(IsTransientXRootDError(XrdCl::errErrorResponse, kXR_noserver));
+   // Error responses of the server: an overloaded or failing server is transient, a missing file, missing permissions
+   // or no data server with the file being available (which typically lasts longer than the retries) are not
+   EXPECT_FALSE(IsTransientXRootDError(XrdCl::errErrorResponse, kXR_noserver));
    EXPECT_TRUE(IsTransientXRootDError(XrdCl::errErrorResponse, kXR_Overloaded));
    EXPECT_TRUE(IsTransientXRootDError(XrdCl::errErrorResponse, kXR_IOError));
    EXPECT_FALSE(IsTransientXRootDError(XrdCl::errErrorResponse, kXR_NotFound));

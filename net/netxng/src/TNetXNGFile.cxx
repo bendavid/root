@@ -218,7 +218,7 @@ TNetXNGFile::TNetXNGFile(const char *url, const char *lurl, Option_t *mode, cons
    // Open the file synchronously
    status = fFile->Open(fUrl->GetURL(), static_cast<XrdCl::OpenFlags::Flags>(fMode));
    if (!status.IsOK()) {
-      // e.g. kXR_noserver: TFile::Open() retries opening the file
+      // e.g. an overloaded server or a lost connection: TFile::Open() retries opening the file
       if (ROOT::Internal::IsTransientXRootDError(status.code, status.errNo))
          SetBit(kTransientOpenError);
 #if XrdVNUMBER >= 40000

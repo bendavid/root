@@ -19,8 +19,8 @@ namespace Internal {
 
 /// Whether a failed XRootD client operation, with the status code `code` and the server error number `errNo` of its
 /// XrdCl::XRootDStatus, failed with a transient error that is worth retrying (see ROOT::Internal::RIORetry): an
-/// unreachable, overloaded or failing server, or a lost or timed-out connection. Errors such as a missing file or
-/// missing permissions are permanent.
+/// overloaded or failing server, or a lost or timed-out connection. Errors such as a missing file, missing permissions
+/// or no data server holding the file being available (kXR_noserver) are not retried.
 bool IsTransientXRootDError(std::uint16_t code, std::uint32_t errNo);
 
 } // namespace Internal
