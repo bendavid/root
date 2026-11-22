@@ -24,6 +24,7 @@ ROOT_LINKER_LIBRARY(RIO
   src/InternalIOUtils.cxx
   src/RConcurrentHashColl.cxx
   src/RFile.cxx
+  src/RIORetry.cxx
   src/RRawFile.cxx
   ${rawfile_local_sources}
   src/TArchiveFile.cxx

@@ -20,6 +20,7 @@ ROOT_STANDARD_LIBRARY_PACKAGE(NetxNG
     src/TNetXNGFileStager.cxx
     src/TNetXNGSystem.cxx
     src/RRawFileNetXNG.cxx
+    src/RNetXNGTransientErrors.cxx
   DEPENDENCIES
     Net
     RIO

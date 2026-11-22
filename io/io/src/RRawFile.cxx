@@ -21,6 +21,7 @@
 #include "TPluginManager.h"
 #include "TROOT.h"
 #include "ROOT/InternalIOUtils.hxx"
+#include "ROOT/RIORetry.hxx"
 
 #include <algorithm>
 #include <cctype> // for towlower
@@ -59,6 +60,25 @@ size_t ROOT::Internal::RRawFile::RBlockBuffer::CopyTo(void *buffer, size_t nbyte
    return copiedBytes;
 }
 
+namespace {
+
+/// Call `operation`, retrying it if it throws an RRawFile::RTransientError (see ROOT::Internal::RIORetry)
+template <typename F>
+auto CallRetryingTransientErrors(const std::string &url, const char *what, F &&operation) -> decltype(operation())
+{
+   for (int retry = 0;; ++retry) {
+      try {
+         return operation();
+      } catch (const ROOT::Internal::RRawFile::RTransientError &e) {
+         if (retry >= ROOT::Internal::RIORetry::GetMaxRetries())
+            throw;
+         ROOT::Internal::RIORetry::WaitBeforeRetry(retry, "RRawFile", std::string(what) + " '" + url + "'", e.what());
+      }
+   }
+}
+
+} // anonymous namespace
+
 ROOT::Internal::RRawFile::RRawFile(std::string_view url, ROptions options) : fUrl(url), fOptions(options) {}
 
 std::unique_ptr<ROOT::Internal::RRawFile>
@@ -94,7 +114,7 @@ void ROOT::Internal::RRawFile::EnsureOpen()
    if (fIsOpen)
       return;
 
-   OpenImpl();
+   CallRetryingTransientErrors(fUrl, "opening", [this] { OpenImpl(); });
    fIsOpen = true;
    SetDiscourageReadAheadImpl(!fIsBuffering);
 }
@@ -122,7 +142,7 @@ std::uint64_t ROOT::Internal::RRawFile::GetSize()
       return fFileSize;
 
    EnsureOpen();
-   fFileSize = GetSizeImpl();
+   fFileSize = CallRetryingTransientErrors(fUrl, "getting the size of", [this] { return GetSizeImpl(); });
    return fFileSize;
 }
 
@@ -157,7 +177,7 @@ size_t ROOT::Internal::RRawFile::ReadAt(void *buffer, size_t nbytes, std::uint64
 
    // "Large" reads are served directly, bypassing the cache; since nbytes > 0, fBlockSize == 0 is also handled here
    if (!fIsBuffering || nbytes > static_cast<unsigned int>(fOptions.fBlockSize))
-      return ReadAtImpl(buffer, nbytes, offset);
+      return CallRetryingTransientErrors(fUrl, "reading from", [&] { return ReadAtImpl(buffer, nbytes, offset); });
 
    if (!fBufferSpace) {
       fBufferSpace.reset(new unsigned char[kNumBlockBuffers * fOptions.fBlockSize]);
@@ -187,7 +207,10 @@ size_t ROOT::Internal::RRawFile::ReadAt(void *buffer, size_t nbytes, std::uint64
 
    /// The remaining bytes populate the newly promoted main buffer
    RBlockBuffer *thisBuffer = &fBlockBuffers[fBlockBufferIdx % kNumBlockBuffers];
-   size_t res = ReadAtImpl(thisBuffer->fBuffer, fOptions.fBlockSize, offset);
+   // invalidate the buffer while it is being filled: the read may fail
+   thisBuffer->fBufferSize = 0;
+   size_t res = CallRetryingTransientErrors(
+      fUrl, "reading from", [&] { return ReadAtImpl(thisBuffer->fBuffer, fOptions.fBlockSize, offset); });
    thisBuffer->fBufferOffset = offset;
    thisBuffer->fBufferSize = res;
    size_t remainingBytes = std::min(res, nbytes);
@@ -199,7 +222,7 @@ size_t ROOT::Internal::RRawFile::ReadAt(void *buffer, size_t nbytes, std::uint64
 void ROOT::Internal::RRawFile::ReadV(RIOVec *ioVec, unsigned int nReq)
 {
    EnsureOpen();
-   ReadVImpl(ioVec, nReq);
+   CallRetryingTransientErrors(fUrl, "vector read from", [&] { ReadVImpl(ioVec, nReq); });
 }
 
 void ROOT::Internal::RRawFile::SetBuffering(bool value)

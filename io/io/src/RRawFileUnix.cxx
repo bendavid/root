@@ -11,6 +11,7 @@
 
 #include "ROOT/RConfig.hxx"
 #include "ROOT/RRawFileUnix.hxx"
+#include "ROOT/RIORetry.hxx"
 
 #ifdef R__HAS_URING
   #include "ROOT/RIoUring.hxx"
@@ -25,6 +26,21 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+
+namespace {
+
+/// Throw the error of a failed system call with the current errno, as an RRawFile::RTransientError if the errno is a
+/// transient error (e.g. of a network file system)
+[[noreturn]] void ThrowSysError(const std::string &message)
+{
+   const int errnum = errno;
+   const std::string what = message + ", error: " + std::string(strerror(errnum));
+   if (ROOT::Internal::RIORetry::IsTransientErrno(errnum))
+      throw ROOT::Internal::RRawFile::RTransientError(what);
+   throw std::runtime_error(what);
+}
+
+} // anonymous namespace
 #include <vector>
 
 #include <fcntl.h>
@@ -81,7 +97,7 @@ std::uint64_t ROOT::Internal::RRawFileUnix::GetSizeImpl()
    int res = fstat(fFileDes, &info);
 #endif
    if (res != 0)
-      throw std::runtime_error("Cannot call fstat on '" + fUrl + "', error: " + std::string(strerror(errno)));
+      ThrowSysError("Cannot call fstat on '" + fUrl + "'");
    return info.st_size;
 }
 
@@ -93,7 +109,7 @@ void ROOT::Internal::RRawFileUnix::OpenImpl()
    fFileDes = open(GetLocation(fUrl).c_str(), O_RDONLY);
 #endif
    if (fFileDes < 0) {
-      throw std::runtime_error("Cannot open '" + fUrl + "', error: " + std::string(strerror(errno)));
+      ThrowSysError("Cannot open '" + fUrl + "'");
    }
 
    if (fOptions.fBlockSize != ROptions::kUseDefaultBlockSize)
@@ -107,7 +123,7 @@ void ROOT::Internal::RRawFileUnix::OpenImpl()
    int res = fstat(fFileDes, &info);
 #endif
    if (res != 0) {
-      throw std::runtime_error("Cannot call fstat on '" + fUrl + "', error: " + std::string(strerror(errno)));
+      ThrowSysError("Cannot call fstat on '" + fUrl + "'");
    }
    if (info.st_blksize > 0) {
       fOptions.fBlockSize = info.st_blksize;
@@ -192,7 +208,7 @@ size_t ROOT::Internal::RRawFileUnix::ReadAtImpl(void *buffer, size_t nbytes, std
       if (res < 0) {
          if (errno == EINTR)
             continue;
-         throw std::runtime_error("Cannot read from '" + fUrl + "', error: " + std::string(strerror(errno)));
+         ThrowSysError("Cannot read from '" + fUrl + "'");
       } else if (res == 0) {
          return total_bytes;
       }

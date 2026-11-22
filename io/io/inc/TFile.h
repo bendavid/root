@@ -272,7 +272,10 @@ public:
       // Set this bit to block an unwanted automatic call to TTree::ChangeFile
       // e.g. during TFileMerger operations (bypassing any set MaxTreeSize)
       // This is a transient bit and has no relevance for I/O.
-      kCancelTTreeChangeRequest = BIT(18)
+      kCancelTTreeChangeRequest = BIT(18),
+      // Set by the file implementations if opening the file failed with a transient error (e.g. a storage server that
+      // is temporarily unreachable): TFile::Open() then retries opening it (see ROOT::Internal::RIORetry).
+      kTransientOpenError = BIT(19)
    };
    enum ERelativeTo { kBeg = 0, kCur = 1, kEnd = 2 };
    enum { kStartBigFile  = 2000000000 };

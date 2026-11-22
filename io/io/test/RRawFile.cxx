@@ -3,6 +3,8 @@
 #include "TFile.h"
 
 #include "ROOT/RRawFileTFile.hxx"
+#include "ROOT/TestSupport.hxx"
+#include "TEnv.h"
 
 #include <atomic>
 #include <memory>
@@ -47,6 +49,74 @@ public:
    std::uint64_t GetSizeImpl() final { return fContent.size(); }
 
    void SetDiscourageReadAheadImpl(bool val) final { fDiscourageReadAhead = val; }
+};
+
+/// An RRawFile whose open and read operations fail the given number of times before succeeding, with an
+/// RRawFile::RTransientError or (if fPermanent) with a std::runtime_error
+class RRawFileFailing : public RRawFile {
+public:
+   int fOpenFailures = 0;
+   int fReadFailures = 0;
+   bool fPermanent = false;
+   int fNumOpen = 0;
+   int fNumReadAt = 0;
+
+   RRawFileFailing() : RRawFile("failing://file", MakeOptions()) {}
+
+   static ROptions MakeOptions()
+   {
+      ROptions options;
+      options.fBlockSize = 0;
+      return options;
+   }
+
+   std::unique_ptr<RRawFile> Clone() const final { return std::make_unique<RRawFileFailing>(); }
+
+   void Fail(int &nFailures)
+   {
+      if (nFailures <= 0)
+         return;
+      --nFailures;
+      if (fPermanent)
+         throw std::runtime_error("permanent error");
+      throw RTransientError("transient error");
+   }
+
+   void OpenImpl() final
+   {
+      fNumOpen++;
+      Fail(fOpenFailures);
+   }
+
+   size_t ReadAtImpl(void *buffer, size_t nbytes, std::uint64_t /* offset */) final
+   {
+      fNumReadAt++;
+      Fail(fReadFailures);
+      memset(buffer, 'x', nbytes);
+      return nbytes;
+   }
+
+   std::uint64_t GetSizeImpl() final { return 100; }
+};
+
+/// Use the given number of retries of transient I/O errors, without delay, while in scope
+class TransientErrorRetriesRAII {
+   int fRetries;
+   double fDelay;
+
+public:
+   TransientErrorRetriesRAII(int retries)
+      : fRetries(gEnv->GetValue("IO.TransientErrorRetries", 3)),
+        fDelay(gEnv->GetValue("IO.TransientErrorRetryDelay", 5.))
+   {
+      gEnv->SetValue("IO.TransientErrorRetries", retries);
+      gEnv->SetValue("IO.TransientErrorRetryDelay", 0.);
+   }
+   ~TransientErrorRetriesRAII()
+   {
+      gEnv->SetValue("IO.TransientErrorRetries", fRetries);
+      gEnv->SetValue("IO.TransientErrorRetryDelay", fDelay);
+   }
 };
 
 } // anonymous namespace
@@ -387,4 +457,70 @@ TEST(RRawFile, ShallowClone)
    for (auto &t : threads)
       t.join();
    EXPECT_EQ(0, nErrors.load());
+}
+
+TEST(RRawFile, TransientErrorsRetried)
+{
+   TransientErrorRetriesRAII retries(3);
+   ROOT::TestSupport::CheckDiagsRAII diags;
+   diags.requiredDiag(kWarning, "RRawFile", "failed with a transient error", /*matchFullMessage=*/false);
+
+   RRawFileFailing f;
+   f.fOpenFailures = 2;
+   f.fReadFailures = 3;
+   char buffer[10];
+   EXPECT_EQ(10u, f.ReadAt(buffer, 10, 0));
+   EXPECT_EQ(3, f.fNumOpen);
+   EXPECT_EQ(4, f.fNumReadAt);
+   EXPECT_EQ('x', buffer[9]);
+
+   // vector reads are retried as a whole
+   f.fReadFailures = 1;
+   f.fNumReadAt = 0;
+   char buffers[2][5];
+   RRawFile::RIOVec ioVec[2];
+   for (int i = 0; i < 2; ++i) {
+      ioVec[i].fBuffer = buffers[i];
+      ioVec[i].fOffset = 10 * i;
+      ioVec[i].fSize = 5;
+   }
+   f.ReadV(ioVec, 2);
+   EXPECT_EQ(3, f.fNumReadAt);
+   EXPECT_EQ(5u, ioVec[1].fOutBytes);
+}
+
+TEST(RRawFile, TransientErrorsExhausted)
+{
+   TransientErrorRetriesRAII retries(3);
+   ROOT::TestSupport::CheckDiagsRAII diags;
+   diags.requiredDiag(kWarning, "RRawFile", "failed with a transient error", /*matchFullMessage=*/false);
+
+   RRawFileFailing f;
+   f.fReadFailures = 4;
+   char buffer[10];
+   EXPECT_THROW(f.ReadAt(buffer, 10, 0), RRawFile::RTransientError);
+   EXPECT_EQ(4, f.fNumReadAt);
+   // the next read succeeds
+   EXPECT_EQ(10u, f.ReadAt(buffer, 10, 0));
+}
+
+TEST(RRawFile, PermanentErrorsNotRetried)
+{
+   TransientErrorRetriesRAII retries(3);
+   RRawFileFailing f;
+   f.fPermanent = true;
+   f.fReadFailures = 1;
+   char buffer[10];
+   EXPECT_THROW(f.ReadAt(buffer, 10, 0), std::runtime_error);
+   EXPECT_EQ(1, f.fNumReadAt);
+}
+
+TEST(RRawFile, TransientErrorRetriesDisabled)
+{
+   TransientErrorRetriesRAII retries(0);
+   RRawFileFailing f;
+   f.fOpenFailures = 1;
+   EXPECT_THROW(f.GetSize(), RRawFile::RTransientError);
+   EXPECT_EQ(1, f.fNumOpen);
+   EXPECT_EQ(100u, f.GetSize());
 }

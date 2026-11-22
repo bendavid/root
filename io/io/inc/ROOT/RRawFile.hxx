@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 namespace ROOT {
@@ -44,6 +45,14 @@ class RRawFile {
 public:
    /// kAuto detects the line break from the first line, kSystem picks the system's default
    enum class ELineBreaks { kAuto, kSystem, kUnix, kWindows };
+
+   /// Thrown by the implementations (OpenImpl(), ReadAtImpl(), ReadVImpl(), GetSizeImpl()) for transient errors, e.g. a
+   /// storage server that is temporarily unreachable: the base class then retries the operation (see
+   /// ROOT::Internal::RIORetry). Other errors are thrown as std::runtime_error and not retried.
+   class RTransientError : public std::runtime_error {
+   public:
+      using std::runtime_error::runtime_error;
+   };
 
    /// On construction, an ROptions parameter can customize the RRawFile behavior
    struct ROptions {

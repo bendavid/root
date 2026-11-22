@@ -10,6 +10,7 @@
  *************************************************************************/
 
 #include "ROOT/RRawFileNetXNG.hxx"
+#include "ROOT/RNetXNGTransientErrors.hxx"
 
 #include <TError.h>
 #include <TSystem.h>
@@ -29,6 +30,15 @@
 #include <XrdVersion.hh>
 
 namespace {
+
+/// Throw the error of a failed XRootD client operation, as an RRawFile::RTransientError if it is worth retrying
+[[noreturn]] void ThrowXRootDError(const std::string &message, const XrdCl::XRootDStatus &st)
+{
+   const std::string what = message + ", " + st.ToString() + "; " + st.GetErrorMessage();
+   if (ROOT::Internal::IsTransientXRootDError(st.code, st.errNo))
+      throw ROOT::Internal::RRawFile::RTransientError(what);
+   throw std::runtime_error(what);
+}
 constexpr int kDefaultBlockSize = 128 * 1024; // Read in relatively large 128k blocks for better network utilization
 } // anonymous namespace
 
@@ -85,8 +95,7 @@ std::uint64_t ROOT::Internal::RRawFileNetXNG::GetSizeImpl()
    // another round trip to the server
    auto st = pImpl->file.Stat( false, info );
    if( !st.IsOK() )
-     throw std::runtime_error( "Cannot determine size of '" + fUrl + "', " +
-                               st.ToString() + "; " + st.GetErrorMessage() );
+      ThrowXRootDError("Cannot determine size of '" + fUrl + "'", st);
    std::uint64_t ret = info->GetSize();
    delete info; // XrdCl only allocates the object is the status was OK
    return ret;
@@ -96,8 +105,7 @@ void ROOT::Internal::RRawFileNetXNG::OpenImpl()
 {
    auto st = pImpl->file.Open( fUrl, XrdCl::OpenFlags::Read );
    if( !st.IsOK() )
-     throw std::runtime_error( "Cannot open '" + fUrl + "', " +
-                               st.ToString() + "; " + st.GetErrorMessage() );
+      ThrowXRootDError("Cannot open '" + fUrl + "'", st);
    if (fOptions.fBlockSize == ROptions::kUseDefaultBlockSize)
       fOptions.fBlockSize = kDefaultBlockSize;
 }
@@ -107,8 +115,7 @@ size_t ROOT::Internal::RRawFileNetXNG::ReadAtImpl(void *buffer, size_t nbytes, s
    std::uint32_t btsread = 0;
    auto st = pImpl->file.Read( offset, nbytes, buffer, btsread );
    if( !st.IsOK() )
-     throw std::runtime_error( "Cannot read from '" + fUrl + "', " +
-                               st.ToString() + "; " + st.GetErrorMessage() );
+      ThrowXRootDError("Cannot read from '" + fUrl + "'", st);
    return btsread;
 }
 
@@ -122,8 +129,7 @@ void ROOT::Internal::RRawFileNetXNG::ReadVImpl(RIOVec *ioVec, unsigned int nReq)
    XrdCl::VectorReadInfo *info = nullptr;
    auto st = pImpl->file.VectorRead( chunks, nullptr, info );
    if( !st.IsOK() )
-     throw std::runtime_error( "Cannot do vector read from '" + fUrl + "', " +
-                               st.ToString() + "; " + st.GetErrorMessage() );
+      ThrowXRootDError("Cannot do vector read from '" + fUrl + "'", st);
 
    XrdCl::ChunkList &rsp = info->GetChunks();
    for( std::size_t i = 0; i < nReq; ++i )

@@ -378,6 +378,15 @@ ACLiC.Linkdef:          _linkdef
 # local files via posix_fadvise). Default is yes.
 #TFile.AsyncReading:     no
 
+# Retries of I/O operations that failed with a transient error, e.g. a storage server that is
+# temporarily unreachable or overloaded: opening files for reading (TFile::Open()), reading
+# xrootd files (TNetXNGFile), and opening and reading files through RRawFile (RNTuple).
+# Errors such as a missing file are not retried. The number of retries (0 disables them),
+# and the delay before the first retry in seconds, which grows by a factor of 3 with every
+# further retry (varied randomly by +-50%).
+#IO.TransientErrorRetries:     3
+#IO.TransientErrorRetryDelay:  5
+
 # Control the usage of asynchronous prefetching capabilities irrespective
 # of the TFile implementation. By default it is disabled.
 # In conjunction with a TFileCacheRead (for example the TTreeCache), it

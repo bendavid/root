@@ -33,7 +33,12 @@
 #include <XrdVersion.hh>
 #include <iostream>
 
+#include <ROOT/RIORetry.hxx>
+#include <ROOT/RNetXNGTransientErrors.hxx>
 #include <ROOT/StringUtils.hxx>
+
+#include <memory>
+#include <string>
 
 namespace {
 
@@ -213,6 +218,9 @@ TNetXNGFile::TNetXNGFile(const char *url, const char *lurl, Option_t *mode, cons
    // Open the file synchronously
    status = fFile->Open(fUrl->GetURL(), static_cast<XrdCl::OpenFlags::Flags>(fMode));
    if (!status.IsOK()) {
+      // e.g. kXR_noserver: TFile::Open() retries opening the file
+      if (ROOT::Internal::IsTransientXRootDError(status.code, status.errNo))
+         SetBit(kTransientOpenError);
 #if XrdVNUMBER >= 40000
       if( status.code == errRedirect )
          fNewUrl = status.GetErrorMessage().c_str();
@@ -440,9 +448,18 @@ Bool_t TNetXNGFile::ReadBuffer(char *buffer, Long64_t position, Int_t length)
    Double_t start = 0;
    if (gPerfStats) start = TTimeStamp();
 
-   // Read the data
+   // Read the data, retrying transient errors (see ROOT::Internal::RIORetry)
    uint32_t bytesRead = 0;
-   XRootDStatus st = fFile->Read(fOffset, length, buffer, bytesRead);
+   XRootDStatus st;
+   for (int retry = 0;; ++retry) {
+      bytesRead = 0;
+      st = fFile->Read(fOffset, length, buffer, bytesRead);
+      if (st.IsOK() || !ROOT::Internal::IsTransientXRootDError(st.code, st.errNo) ||
+          retry >= ROOT::Internal::RIORetry::GetMaxRetries())
+         break;
+      ROOT::Internal::RIORetry::WaitBeforeRetry(retry, "TNetXNGFile::ReadBuffer",
+                                                std::string("reading from ") + fUrl->GetURL(), st.ToStr());
+   }
    if (gDebug > 0)
       Info("ReadBuffer", "%s bytes read: %u", st.ToStr().c_str(), bytesRead);
 
@@ -496,8 +513,6 @@ Bool_t TNetXNGFile::ReadBuffers(char *buffer, Long64_t *position, Int_t *length,
 
    std::vector<ChunkList>      chunkLists;
    ChunkList                   chunks;
-   std::vector<XRootDStatus*> *statuses;
-   TSemaphore                 *semaphore;
    Int_t                       totalBytes = 0;
    Long64_t                    offset     = 0;
    char                       *cursor     = buffer;
@@ -550,47 +565,49 @@ Bool_t TNetXNGFile::ReadBuffers(char *buffer, Long64_t *position, Int_t *length,
    if( !chunks.empty() )
       chunkLists.push_back(chunks);
 
-   TAsyncReadvHandler *handler;
-   XRootDStatus        status;
-   semaphore = new TSemaphore(0);
-   statuses  = new std::vector<XRootDStatus*>(chunkLists.size());
+   // Read asynchronously but wait for all responses; the whole request is retried if it failed with a transient error
+   // (see ROOT::Internal::RIORetry)
+   for (int retry = 0;; ++retry) {
+      TSemaphore semaphore(0);
+      std::vector<XRootDStatus *> statuses(chunkLists.size(), nullptr);
+      XRootDStatus failure;
+      bool failed = false;
 
-   // Read asynchronously but wait for all responses
-   std::vector<ChunkList>::iterator it;
-   for (it = chunkLists.begin(); it != chunkLists.end(); ++it)
-   {
-      handler = new TAsyncReadvHandler(statuses, it - chunkLists.begin(),
-                                       semaphore);
-      status = fFile->VectorRead(*it, 0, handler);
-
-      if (!status.IsOK()) {
-         Error("ReadBuffers", "%s", status.ToStr().c_str());
-         return kTRUE;
-      }
-   }
-
-   // Wait for all responses
-   for (it = chunkLists.begin(); it != chunkLists.end(); ++it) {
-      semaphore->Wait();
-   }
-
-   // Check for errors
-   for (it = chunkLists.begin(); it != chunkLists.end(); ++it) {
-      XRootDStatus *st = statuses->at(it - chunkLists.begin());
-
-      if (!st->IsOK()) {
-         Error("ReadBuffers", "%s", st->ToStr().c_str());
-         for( ; it != chunkLists.end(); ++it )
-         {
-            st = statuses->at( it - chunkLists.begin() );
-            delete st;
+      std::size_t nSubmitted = 0;
+      for (; nSubmitted < chunkLists.size(); ++nSubmitted) {
+         auto handler = new TAsyncReadvHandler(&statuses, nSubmitted, &semaphore);
+         XRootDStatus status = fFile->VectorRead(chunkLists[nSubmitted], 0, handler);
+         if (!status.IsOK()) {
+            // the handler is not called
+            delete handler;
+            failure = status;
+            failed = true;
+            break;
          }
-         delete statuses;
-         delete semaphore;
+      }
 
+      // Wait for the responses to all submitted requests, also after a failure: they write into the buffer
+      for (std::size_t i = 0; i < nSubmitted; ++i)
+         semaphore.Wait();
+
+      // Check for errors
+      for (std::size_t i = 0; i < nSubmitted; ++i) {
+         std::unique_ptr<XRootDStatus> st(statuses[i]);
+         if (!failed && !st->IsOK()) {
+            failure = *st;
+            failed = true;
+         }
+      }
+
+      if (!failed)
+         break;
+      if (!ROOT::Internal::IsTransientXRootDError(failure.code, failure.errNo) ||
+          retry >= ROOT::Internal::RIORetry::GetMaxRetries()) {
+         Error("ReadBuffers", "%s", failure.ToStr().c_str());
          return kTRUE;
       }
-      delete st;
+      ROOT::Internal::RIORetry::WaitBeforeRetry(retry, "TNetXNGFile::ReadBuffers",
+                                                std::string("vector read from ") + fUrl->GetURL(), failure.ToStr());
    }
 
    // Bump the globals
@@ -607,8 +624,6 @@ Bool_t TNetXNGFile::ReadBuffers(char *buffer, Long64_t *position, Int_t *length,
    if (gMonitoringWriter)
       gMonitoringWriter->SendFileReadProgress(this);
 
-   delete statuses;
-   delete semaphore;
    return kFALSE;
 }
 

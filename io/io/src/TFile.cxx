@@ -168,6 +168,7 @@ The structure of a directory is shown in TDirectoryFile::TDirectoryFile
 #include "TGlobal.h"
 #include "ROOT/RConcurrentHashColl.hxx"
 #include "ROOT/InternalIOUtils.hxx"
+#include "ROOT/RIORetry.hxx"
 
 #include <cinttypes>
 #include <cmath>
@@ -584,6 +585,9 @@ TFile::TFile(const char *fname1, Option_t *option, const char *ftitle, Int_t com
       fD = TFile::SysOpen(fname.Data(), O_RDONLY | O_BINARY, S_IREAD | S_IWRITE);
 #endif
       if (fD == -1) {
+         // e.g. a network file system that is temporarily unavailable: TFile::Open() retries opening the file
+         if (ROOT::Internal::RIORetry::IsTransientErrno(errno))
+            SetBit(kTransientOpenError);
          SysError("TFile", "file %s can not be opened for reading", fname.Data());
          zombify();
          return;
@@ -3929,10 +3933,17 @@ TFile *TFile::Open(const char *url, Option_t *options, const char *ftitle,
       }
    }
 
+   // Opening files for reading is retried if it failed with a transient error (see kTransientOpenError)
+   TString readMode(option);
+   readMode.ToUpper();
+   const bool isReadOnly = readMode.IsNull() || readMode == "READ" || readMode == "READ_WITHOUT_GLOBALREGISTRATION" ||
+                           readMode == "CACHEREAD";
+
    // Try sequentially all names in 'names'
    TString name, n;
    Ssiz_t from = 0;
    while (namelist.Tokenize(n, from, "|") && !f) {
+      int nRetries = 0;
 
       // check if we read through a file cache
       if (!strcasecmp(option, "CACHEREAD") ||
@@ -3945,6 +3956,7 @@ TFile *TFile::Open(const char *url, Option_t *options, const char *ftitle,
 
       IncrementFileCounter();
 
+   retryOpen:
       // change names to be recognized by the plugin manager
       // e.g. /protocol/path/to/file.root -> protocol:/path/to/file.root
       TUrl urlname(n, kTRUE);
@@ -4028,6 +4040,16 @@ TFile *TFile::Open(const char *url, Option_t *options, const char *ftitle,
                   f = TFile::Open(urlname.GetFileAndOptions(), option, ftitle, compress);
             }
          }
+      }
+
+      if (f && f->IsZombie() && f->TestBit(kTransientOpenError) && isReadOnly &&
+          nRetries < ROOT::Internal::RIORetry::GetMaxRetries()) {
+         delete f;
+         f = nullptr;
+         ROOT::Internal::RIORetry::WaitBeforeRetry(nRetries, "TFile::Open", std::string("opening ") + name.Data(),
+                                                   "see the error above");
+         ++nRetries;
+         goto retryOpen;
       }
 
       if (f && f->IsZombie()) {
