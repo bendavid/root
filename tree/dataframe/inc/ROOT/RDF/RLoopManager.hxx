@@ -14,6 +14,7 @@
 #include "ROOT/RDataSource.hxx"
 #include "ROOT/RDF/RColumnReaderBase.hxx"
 #include "ROOT/RDF/RDatasetSpec.hxx"
+#include "ROOT/RDF/RFileErrorPolicy.hxx"
 #include "ROOT/RDF/RNodeBase.hxx"
 #include "ROOT/RDF/RNewSampleNotifier.hxx"
 #include "ROOT/RDF/RSampleInfo.hxx"
@@ -23,6 +24,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <string_view>
@@ -171,6 +173,14 @@ class RLoopManager : public RNodeBase {
    std::vector<ROOT::RDF::RSampleInfo> fSampleInfos;
    unsigned int fNRuns{0}; ///< Number of event loops run
 
+   /// What the event loops do if an input file cannot be opened
+   ROOT::RDF::Experimental::RFileErrorPolicy fFileErrorPolicy;
+   /// The input files of the current (or last) event loop, with their index in the input, see RecordProcessedFile()
+   /// and SkipFileAfterError()
+   std::vector<std::pair<std::size_t, ROOT::RDF::Experimental::RFileStatus>> fFileReport;
+   std::size_t fNSkippedFiles = 0;
+   mutable std::mutex fFileReportMutex;
+
    /// Readers for TTree/RDataSource columns (one per slot), shared by all nodes in the computation graph.
    std::vector<std::unordered_map<std::string, std::unique_ptr<RColumnReaderBase>>> fDatasetColumnReaders;
 
@@ -270,6 +280,19 @@ public:
                               std::shared_ptr<void> argument = nullptr);
    void RegisterCallback(ULong64_t everyNEvents, std::function<void(unsigned int)> &&f);
    unsigned int GetNRuns() const { return fNRuns; }
+   void SetFileErrorPolicy(const ROOT::RDF::Experimental::RFileErrorPolicy &policy) { fFileErrorPolicy = policy; }
+   const ROOT::RDF::Experimental::RFileErrorPolicy &GetFileErrorPolicy() const { return fFileErrorPolicy; }
+   /// Called by the multi-threaded event loops for an input file (number `fileIndex` of the input) whose entries are
+   /// processed, see GetFileReport(). Thread safe.
+   void RecordProcessedFile(std::size_t fileIndex, const std::string &fileName);
+   /// Called by the multi-threaded event loops if the input file `fileName` (number `fileIndex` of the input) cannot
+   /// be opened, with the error `error`: returns whether to skip the file (and records it, see GetFileReport()), or to
+   /// stop the event loop with the error. Thread safe.
+   bool SkipFileAfterError(std::size_t fileIndex, const std::string &fileName, const std::string &error);
+   /// The input files of the last event loop, in the order of the input, see ROOT::RDF::Experimental::GetFileReport()
+   std::vector<ROOT::RDF::Experimental::RFileStatus> GetFileReport() const;
+   /// The input files that the last event loop skipped
+   std::vector<ROOT::RDF::Experimental::RSkippedFile> GetSkippedFiles() const;
    bool HasDataSourceColumnReaders(std::string_view col, const std::type_info &ti) const;
    void AddDataSourceColumnReaders(std::string_view col, std::vector<std::unique_ptr<RColumnReaderBase>> &&readers,
                                    const std::type_info &ti);

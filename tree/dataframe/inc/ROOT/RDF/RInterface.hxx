@@ -17,6 +17,7 @@
 #include "ROOT/RDF/InterfaceUtils.hxx"
 #include "ROOT/RDF/RColumnRegister.hxx"
 #include "ROOT/RDF/RDefaultValueFor.hxx"
+#include "ROOT/RDF/RFileErrorPolicy.hxx"
 #include "ROOT/RDF/RDefine.hxx"
 #include "ROOT/RDF/RDefinePerSample.hxx"
 #include "ROOT/RDF/RFilter.hxx"
@@ -145,6 +146,12 @@ class RInterface : public RInterfaceBase {
    friend void ROOT::Internal::RDF::LoadCustomValues(ROOT::RDF::RNode &node, const std::vector<std::string> &cols,
                                                      const std::vector<std::size_t> &vecSizes, float vecPadding,
                                                      ROOT::RVecF &dest);
+   friend void ROOT::RDF::Experimental::SetFileErrorPolicy(ROOT::RDF::RNode node,
+                                                           const ROOT::RDF::Experimental::RFileErrorPolicy &policy);
+   friend std::vector<ROOT::RDF::Experimental::RSkippedFile>
+   ROOT::RDF::Experimental::GetSkippedFiles(ROOT::RDF::RNode node);
+   friend std::vector<ROOT::RDF::Experimental::RFileStatus>
+   ROOT::RDF::Experimental::GetFileReport(ROOT::RDF::RNode node);
 
    std::shared_ptr<Proxied> fProxiedPtr; ///< Smart pointer to the graph node encapsulated by this RInterface.
 

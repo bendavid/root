@@ -51,9 +51,9 @@ class RNoCleanupNotifierHelper {
 public:
    bool Notify()
    {
-      TTree *t = fChain->GetTree();
-      TObjArray *branches = t->GetListOfBranches();
-      ClearMustCleanupBits(*branches);
+      // No tree is loaded e.g. while the chain moves on past a file that cannot be opened
+      if (TTree *t = fChain->GetTree())
+         ClearMustCleanupBits(*t->GetListOfBranches());
       return true;
    }
 

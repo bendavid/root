@@ -27,6 +27,8 @@
 #include "RNTupleDSFields.hxx"
 
 #include <TError.h>
+
+#include <algorithm>
 #include <TSystem.h>
 
 #include <cassert>
@@ -505,9 +507,15 @@ void ROOT::RDF::RNTupleDS::StageNextSources()
       if (fStagingArea[i]) {
          // The first file is already open and was used to read the schema
          assert(i == 0);
-      } else {
-         fStagingArea[i] = CreatePageSource(fNTupleName, fFileNames[i]);
-         fStagingArea[i]->LoadStructure();
+      } else if (fStagingErrors.count(i) == 0) {
+         // A file that cannot be opened is handled when it is taken from the staging area, see PrepareNextRanges()
+         try {
+            auto source = CreatePageSource(fNTupleName, fFileNames[i]);
+            source->LoadStructure();
+            fStagingArea[i] = std::move(source);
+         } catch (const std::exception &e) {
+            fStagingErrors[i] = e.what();
+         }
       }
    }
 }
@@ -530,17 +538,31 @@ void ROOT::RDF::RNTupleDS::PrepareNextRanges()
 
          std::swap(fStagingArea[fNextFileIndex], range.fSource);
 
-         if (!range.fSource) {
-            // Typically, the prestaged source should have been present. Only if some of the files are empty, we need
-            // to open and attach files here.
-            range.fSource = CreatePageSource(fNTupleName, fFileNames[fNextFileIndex]);
-         }
-         range.fFileName = fFileNames[fNextFileIndex];
-         range.fSource->Attach();
-         fNextFileIndex++;
-         auto nEntries = range.fSource->GetNEntries();
-         if (nEntries == 0)
+         const auto fileIdx = fNextFileIndex++;
+         try {
+            if (auto error = fStagingErrors.find(fileIdx); error != fStagingErrors.end())
+               throw std::runtime_error(error->second);
+            if (!range.fSource) {
+               // Typically, the prestaged source should have been present. Only if some of the files are empty, we
+               // need to open and attach files here.
+               range.fSource = CreatePageSource(fNTupleName, fFileNames[fileIdx]);
+            }
+            range.fSource->Attach();
+         } catch (const std::exception &e) {
+            // None of the entries of the file has been processed: it can be skipped, unless the global entry numbers
+            // matter
+            if (fGlobalEntryRange.has_value() || !fOnFileError || !fOnFileError(fileIdx, fFileNames[fileIdx], e.what()))
+               throw;
             continue;
+         }
+         range.fFileName = fFileNames[fileIdx];
+         range.fFileIndex = fileIdx;
+         auto nEntries = range.fSource->GetNEntries();
+         if (nEntries == 0) {
+            if (fOnFileProcessed && !fGlobalEntryRange.has_value())
+               fOnFileProcessed(fileIdx, fFileNames[fileIdx]);
+            continue;
+         }
          range.fLastEntry = nEntries; // whole file per slot, i.e. entry range [0..nEntries - 1]
 
          fNextRanges.emplace_back(std::move(range));
@@ -616,6 +638,12 @@ std::vector<std::pair<ULong64_t, ULong64_t>> ROOT::RDF::RNTupleDS::GetEntryRange
       auto end = fCurrentRanges[i].fLastEntry + fSeenEntriesNoGlobalRange;
 
       nEntriesPerSource += end - start;
+
+      // Report the file of the range as processed (with a global entry range: if the range overlaps with it)
+      if (fOnFileProcessed && !fFileNames.empty() &&
+          (!fGlobalEntryRange.has_value() || (std::max<ULong64_t>(start, fGlobalEntryRange->first) <
+                                              std::min<ULong64_t>(end, fGlobalEntryRange->second))))
+         fOnFileProcessed(fCurrentRanges[i].fFileIndex, std::string(fCurrentRanges[i].fFileName));
 
       if (fGlobalEntryRange.has_value()) {
 
@@ -770,6 +798,7 @@ void ROOT::RDF::RNTupleDS::Finalize()
       fNextRanges.clear();
       fStagingArea.clear();
       fStagingArea.resize(fFileNames.size());
+      fStagingErrors.clear();
    }
 }
 
@@ -1041,7 +1070,22 @@ void ROOT::RDF::RNTupleDS::ProcessMT(ROOT::Detail::RDF::RLoopManager &lm)
                tasks.reset();
             }
             if (assignment->fKind == Scheduler_t::EKind::kOpenFile) {
-               tasks = PrepareFileTasksMT(assignment->fFileIdx, globalFileOffsets, globalEntries);
+               try {
+                  tasks = PrepareFileTasksMT(assignment->fFileIdx, globalFileOffsets, globalEntries);
+               } catch (const std::exception &e) {
+                  // None of the entries of the file has been processed: it can be skipped, unless the global entry
+                  // numbers matter
+                  if (fGlobalEntryRange.has_value() ||
+                      !lm.SkipFileAfterError(assignment->fFileIdx, fFileNames[assignment->fFileIdx], e.what()))
+                     throw;
+                  source.reset();
+                  tasks.reset();
+                  scheduler.Publish(worker, 0, nullptr);
+                  continue;
+               }
+               // with a global entry range, the files outside of it have no clusters to process
+               if (!fGlobalEntryRange.has_value() || !tasks->fClusters.empty())
+                  lm.RecordProcessedFile(assignment->fFileIdx, fFileNames[assignment->fFileIdx]);
                source = tasks->fSource;
                scheduler.Publish(worker, tasks->fClusters.size(), tasks);
                continue;

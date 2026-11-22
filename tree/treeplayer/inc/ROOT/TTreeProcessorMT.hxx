@@ -25,6 +25,7 @@
 #include "ROOT/InternalTreeUtils.hxx" // RNoCleanupNotifier
 #include "ROOT/RFriendInfo.hxx"
 
+#include <exception>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -101,6 +102,19 @@ private:
    std::set<std::string> fSuppressErrorsForMissingBranches{};
 
 public:
+   /// Called if a file cannot be opened, with its index in the list of files, its name and the error: returns whether
+   /// to skip the file (true) or to stop processing with the error (false)
+   using FileErrorHandler_t =
+      std::function<bool(std::size_t fileIndex, const std::string &fileName, const std::exception &error)>;
+   /// Called for each file whose entries are processed, with its index in the list of files and its name, when it is
+   /// opened (concurrently, from the worker threads)
+   using FileProcessedHandler_t = std::function<void(std::size_t fileIndex, const std::string &fileName)>;
+
+private:
+   FileErrorHandler_t fFileErrorHandler;
+   FileProcessedHandler_t fFileProcessedHandler;
+
+public:
    TTreeProcessorMT(std::string_view filename, std::string_view treename = "", UInt_t nThreads = 0u,
                     const std::pair<Long64_t, Long64_t> &globalRange = {0, std::numeric_limits<Long64_t>::max()});
    TTreeProcessorMT(const std::vector<std::string_view> &filenames, std::string_view treename = "",
@@ -116,6 +130,14 @@ public:
                     const std::set<std::string> &suppressErrorsForMissingBranches = {});
 
    void Process(std::function<void(TTreeReader &)> func);
+
+   /// Set a handler for the files that cannot be opened, which decides whether to skip them (see FileErrorHandler_t).
+   /// Only used without friends, entry lists and global entry ranges, and only by the worker that opens a file first:
+   /// otherwise, processing stops with the error.
+   void SetFileErrorHandler(FileErrorHandler_t handler) { fFileErrorHandler = std::move(handler); }
+   /// Set a handler that is called for each file whose entries are processed (see FileProcessedHandler_t). With a
+   /// global entry range, it is not called for the files outside of the range.
+   void SetFileProcessedHandler(FileProcessedHandler_t handler) { fFileProcessedHandler = std::move(handler); }
 
    static void SetTasksPerWorkerHint(unsigned int m);
    static unsigned int GetTasksPerWorkerHint();

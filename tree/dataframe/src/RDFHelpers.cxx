@@ -465,6 +465,36 @@ public:
    }
 };
 
+void SetFileErrorPolicy(ROOT::RDF::RNode node, const RFileErrorPolicy &policy)
+{
+   node.GetLoopManager()->SetFileErrorPolicy(policy);
+}
+
+void SetFileErrorPolicy(ROOT::RDataFrame df, const RFileErrorPolicy &policy)
+{
+   SetFileErrorPolicy(ROOT::RDF::AsRNode(df), policy);
+}
+
+std::vector<RSkippedFile> GetSkippedFiles(ROOT::RDF::RNode node)
+{
+   return node.GetLoopManager()->GetSkippedFiles();
+}
+
+std::vector<RSkippedFile> GetSkippedFiles(ROOT::RDataFrame df)
+{
+   return GetSkippedFiles(ROOT::RDF::AsRNode(df));
+}
+
+std::vector<RFileStatus> GetFileReport(ROOT::RDF::RNode node)
+{
+   return node.GetLoopManager()->GetFileReport();
+}
+
+std::vector<RFileStatus> GetFileReport(ROOT::RDataFrame df)
+{
+   return GetFileReport(ROOT::RDF::AsRNode(df));
+}
+
 void AddProgressBar(ROOT::RDF::RNode node)
 {
    constexpr std::size_t callbackEveryNEvents = 1000;

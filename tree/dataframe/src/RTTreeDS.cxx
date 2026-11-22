@@ -20,6 +20,9 @@
 #include <TROOT.h>
 #include <TEntryList.h>
 #include <ROOT/TTreeProcessorMT.hxx>
+#include <TChainElement.h>
+
+#include <algorithm>
 #include <ROOT/RSlotStack.hxx>
 #endif
 
@@ -407,6 +410,14 @@ void ROOT::Internal::RDF::RTTreeDS::ProcessMT(ROOT::Detail::RDF::RLoopManager &l
                                                          suppressErrorsForMissingBranches)
               : std::make_unique<ROOT::TTreeProcessorMT>(*fTree, entryList, fNSlots, suppressErrorsForMissingBranches)};
 
+   if (lm.GetFileErrorPolicy().fSkipFiles) {
+      tp->SetFileErrorHandler([&lm](std::size_t fileIndex, const std::string &fileName, const std::exception &error) {
+         return lm.SkipFileAfterError(fileIndex, fileName, error.what());
+      });
+   }
+   tp->SetFileProcessedHandler(
+      [&lm](std::size_t fileIndex, const std::string &fileName) { lm.RecordProcessedFile(fileIndex, fileName); });
+
    tp->Process([&lm, &slotStack, &entryCount](TTreeReader &treeReader) {
       lm.TTreeThreadTask(treeReader, slotStack, entryCount);
    });
@@ -578,12 +589,45 @@ std::string ROOT::Internal::RDF::RTTreeDS::GetTypeName(std::string_view colName)
 
 std::vector<std::pair<ULong64_t, ULong64_t>> ROOT::Internal::RDF::RTTreeDS::GetTTreeEntryRange(TTree &tree)
 {
+   if (fOnFileProcessed && fLastReportedTreeNumber < 0 && tree.GetCurrentFile()) {
+      fOnFileProcessed(0, tree.GetCurrentFile()->GetName());
+      fLastReportedTreeNumber = 0;
+   }
    // Restrict the range to the global range if available
    const ULong64_t rangeBegin = fGlobalEntryRange.has_value() ? std::max(0ull, fGlobalEntryRange->first) : 0ull;
    const ULong64_t rangeEnd = fGlobalEntryRange.has_value()
                                  ? std::min(static_cast<ULong64_t>(tree.GetEntries()), fGlobalEntryRange->second)
                                  : static_cast<ULong64_t>(tree.GetEntries());
    return std::vector<std::pair<ULong64_t, ULong64_t>>{{rangeBegin, rangeEnd}};
+}
+
+/// Report the files of the chain that the event loop passed since the last call, up to (excluding) the tree number
+/// upToTreeNumber, and the file of that tree if it exists: the files that could not be opened (or that do not contain
+/// the tree) are skipped or stop the event loop with an error, depending on fOnFileError; the others are processed.
+void ROOT::Internal::RDF::RTTreeDS::HandlePassedChainFiles(TChain &chain, Int_t upToTreeNumber)
+{
+   auto *files = chain.GetListOfFiles();
+   const bool canSkip = !fGlobalEntryRange.has_value() && fFriends.empty() &&
+                        !(chain.GetListOfFriends() && chain.GetListOfFriends()->GetSize() > 0);
+   for (Int_t i = fLastReportedTreeNumber + 1; i <= upToTreeNumber && i < chain.GetNtrees(); ++i) {
+      auto *element = static_cast<TChainElement *>(files->At(i));
+      const auto loadResult = element->GetLoadResult();
+      // -3: the file cannot be opened, -4: the tree is not in the file (see TChain::LoadTree)
+      if (i < upToTreeNumber && (loadResult == -3 || loadResult == -4)) {
+         const std::string fileName = element->GetTitle();
+         const std::string error = "TChain::LoadTree: an error occurred while opening file \"" + fileName + "\"" +
+                                   (loadResult == -4 ? " (the tree is not in the file)" : "");
+         if (!(canSkip && fOnFileError && fOnFileError(i, fileName, error)))
+            throw std::runtime_error("RDataFrame::Run: " + error);
+      } else if (fOnFileProcessed) {
+         // with a global entry range: only the files with entries in the range
+         const auto *offsets = chain.GetTreeOffset();
+         if (!fGlobalEntryRange.has_value() || std::max<ULong64_t>(offsets[i], fGlobalEntryRange->first) <
+                                                  std::min<ULong64_t>(offsets[i + 1], fGlobalEntryRange->second))
+            fOnFileProcessed(i, element->GetTitle());
+      }
+      fLastReportedTreeNumber = i;
+   }
 }
 
 std::vector<std::pair<ULong64_t, ULong64_t>> ROOT::Internal::RDF::RTTreeDS::GetTChainEntryRange(TChain &chain)
@@ -593,8 +637,16 @@ std::vector<std::pair<ULong64_t, ULong64_t>> ROOT::Internal::RDF::RTTreeDS::GetT
    // entry, which should always be the first entry in a tree. This allows
    // to get the proper tree offset for the range.
    fTreeReader->Next();
-   if (!ValidRead(fTreeReader->GetEntryStatus()))
+   const bool validRead = ValidRead(fTreeReader->GetEntryStatus());
+   // TChain::LoadTree() moves on past the files that cannot be opened (or that do not contain the tree), recording
+   // their load result: handle them, up to the current tree (or to the end of the chain, if no tree could be loaded)
+   HandlePassedChainFiles(chain, validRead ? chain.GetTreeNumber() : chain.GetNtrees());
+   if (!validRead) {
+      if (fTreeReader->GetEntryStatus() == TTreeReader::kEntryChainFileError && fLastReportedTreeNumber >= 0 &&
+          fLastReportedTreeNumber == chain.GetNtrees() - 1)
+         fSkippedFilesAtEnd = true; // the last files were skipped
       return {};
+   }
    auto treeOffsets = chain.GetTreeOffset();
    auto treeNumber = chain.GetTreeNumber();
    const ULong64_t thisTreeBegin = treeOffsets[treeNumber];
@@ -620,6 +672,10 @@ std::vector<std::pair<ULong64_t, ULong64_t>> ROOT::Internal::RDF::RTTreeDS::GetE
          static_cast<ULong64_t>(fTreeReader->GetCurrentEntry()) == fGlobalEntryRange->second - 1))) {
       // Place the TTreeReader beyond the end of the dataset, so RunFinalChecks can work properly
       fTreeReader->Next();
+      // Report the remaining files of the chain (e.g. without entries), unless the event loop ends at the end of the
+      // global entry range
+      if (auto chain = dynamic_cast<TChain *>(treeOrChain); chain && !fGlobalEntryRange.has_value())
+         HandlePassedChainFiles(*chain, chain->GetNtrees());
       return {};
    }
 
@@ -643,6 +699,8 @@ void ROOT::Internal::RDF::RTTreeDS::Initialize()
    if (ROOT::IsImplicitMTEnabled())
       return;
    assert(!fTreeReader);
+   fLastReportedTreeNumber = -1;
+   fSkippedFilesAtEnd = false;
    fTreeReader = std::make_unique<TTreeReader>(fTree.get(), fTree->GetEntryList(), /*warnAboutLongerFriends*/ true);
    if (fGlobalEntryRange.has_value() && fGlobalEntryRange->first <= std::numeric_limits<Long64_t>::max() &&
        fGlobalEntryRange->second <= std::numeric_limits<Long64_t>::max() && fTreeReader &&
@@ -660,7 +718,7 @@ void ROOT::Internal::RDF::RTTreeDS::InitializeWithOpts(const std::set<std::strin
 
 void ROOT::Internal::RDF::RTTreeDS::RunFinalChecks(bool nodesLeftNotRun) const
 {
-   if (fTreeReader->GetEntryStatus() != TTreeReader::kEntryBeyondEnd && nodesLeftNotRun) {
+   if (fTreeReader->GetEntryStatus() != TTreeReader::kEntryBeyondEnd && !fSkippedFilesAtEnd && nodesLeftNotRun) {
       // something went wrong in the TTreeReader event loop
       throw std::runtime_error("An error was encountered while processing the data. TTreeReader status code is: " +
                                std::to_string(fTreeReader->GetEntryStatus()));

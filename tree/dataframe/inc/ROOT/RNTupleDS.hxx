@@ -26,7 +26,9 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <functional>
 #include <string>
+#include <unordered_map>
 #include <thread>
 #include <vector>
 #include <unordered_map>
@@ -111,6 +113,7 @@ class RNTupleDS final : public ROOT::RDF::RDataSource {
    struct REntryRangeDS {
       /// The page source. It can be shared between this object and other multithreaded tasks.
       std::shared_ptr<ROOT::Internal::RPageSource> fSource;
+      std::size_t fFileIndex = 0; ///< Index of the file in fFileNames
       ULong64_t fFirstEntry = 0; ///< First entry index in fSource
       /// End entry index in fSource, e.g. the number of entries in the range is fLastEntry - fFirstEntry
       ULong64_t fLastEntry = 0;
@@ -148,6 +151,13 @@ class RNTupleDS final : public ROOT::RDF::RDataSource {
    ///   4. On `Finalize()`, the I/O background thread is stopped.
    std::vector<std::shared_ptr<ROOT::Internal::RPageSource>> fStagingArea;
    std::size_t fNextFileIndex = 0; ///< Index into fFileNames to the next file to process
+   /// The errors that occurred when staging files (indices into fFileNames) that could not be opened
+   std::unordered_map<std::size_t, std::string> fStagingErrors;
+   /// Called (by single-threaded event loops) if an input file cannot be opened, with its index, its name and the
+   /// error: returns whether to skip the file (true) or to stop the event loop with the error (false)
+   std::function<bool(std::size_t, const std::string &, const std::string &)> fOnFileError;
+   /// Called (by single-threaded event loops) for each input file whose entries are processed, with its index and name
+   std::function<void(std::size_t, const std::string &)> fOnFileProcessed;
 
    /// We prepare a prototype field for every column. If a column reader is actually requested
    /// in GetColumnReaders(), we move a clone of the field into a new column reader for RDataFrame.
@@ -273,6 +283,14 @@ class RNTupleDS final : public ROOT::RDF::RDataSource {
 
 #endif
 public:
+   /// Set the callbacks for the input files of single-threaded event loops (see fOnFileError and fOnFileProcessed)
+   void SetFileCallbacks(std::function<bool(std::size_t, const std::string &, const std::string &)> onError,
+                         std::function<void(std::size_t, const std::string &)> onProcessed)
+   {
+      fOnFileError = std::move(onError);
+      fOnFileProcessed = std::move(onProcessed);
+   }
+
    RNTupleDS(std::string_view ntupleName, std::string_view fileName);
    RNTupleDS(std::string_view ntupleName, const std::vector<std::string> &fileNames);
    // Rule of five

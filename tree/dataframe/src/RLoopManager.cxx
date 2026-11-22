@@ -599,6 +599,18 @@ void RLoopManager::RunDataSource()
    if (fBeginEntry != 0 || fEndEntry != std::numeric_limits<Long64_t>::max())
       fDataSource->SetGlobalEntryRange(std::make_pair<std::uint64_t, std::uint64_t>(fBeginEntry, fEndEntry));
    // Initialize data source and book finalization
+   // The input files of the event loop: report the processed ones, and apply the file error policy to those that
+   // cannot be opened (see GetFileReport() and SetFileErrorPolicy())
+   auto onFileError = [this](std::size_t fileIndex, const std::string &fileName, const std::string &error) {
+      return SkipFileAfterError(fileIndex, fileName, error);
+   };
+   auto onFileProcessed = [this](std::size_t fileIndex, const std::string &fileName) {
+      RecordProcessedFile(fileIndex, fileName);
+   };
+   if (auto treeDS = dynamic_cast<ROOT::Internal::RDF::RTTreeDS *>(fDataSource.get()))
+      treeDS->SetFileCallbacks(onFileError, onFileProcessed);
+   else if (auto ntupleDS = dynamic_cast<ROOT::RDF::RNTupleDS *>(fDataSource.get()))
+      ntupleDS->SetFileCallbacks(onFileError, onFileProcessed);
    DSRunRAII _{*fDataSource, fSuppressErrorsForMissingBranches};
    // Ensure cleanup task is always called at the end. Notably, this also resets the column readers for those data
    // sources that need it (currently only TTree).
@@ -941,6 +953,12 @@ void RLoopManager::Run(bool jit)
 
    NodesCleanerRAII runKeeper(*this);
 
+   {
+      std::lock_guard<std::mutex> lock(fFileReportMutex);
+      fFileReport.clear();
+      fNSkippedFiles = 0;
+   }
+
    TStopwatch s;
    s.Start();
 
@@ -955,10 +973,65 @@ void RLoopManager::Run(bool jit)
    }
    s.Stop();
 
+   if (const auto nSkipped = GetSkippedFiles().size(); nSkipped > 0) {
+      Warning("RDataFrame::Run",
+              "%zu input file(s) could not be opened and were skipped, their entries were not processed (see "
+              "ROOT::RDF::Experimental::GetSkippedFiles())",
+              nSkipped);
+   }
+
    fNRuns++;
 
    R__LOG_INFO(RDFLogChannel()) << "Finished event loop number " << fNRuns - 1 << " (" << s.CpuTime() << "s CPU, "
                                 << s.RealTime() << "s elapsed).";
+}
+
+void RLoopManager::RecordProcessedFile(std::size_t fileIndex, const std::string &fileName)
+{
+   std::lock_guard<std::mutex> lock(fFileReportMutex);
+   fFileReport.push_back({fileIndex, {fileName, /*fSkipped=*/false, /*fError=*/""}});
+}
+
+bool RLoopManager::SkipFileAfterError(std::size_t fileIndex, const std::string &fileName, const std::string &error)
+{
+   if (!fFileErrorPolicy.fSkipFiles)
+      return false;
+   std::size_t nSkipped = 0;
+   {
+      std::lock_guard<std::mutex> lock(fFileReportMutex);
+      if (fNSkippedFiles >= fFileErrorPolicy.fMaxSkippedFiles)
+         return false;
+      fFileReport.push_back({fileIndex, {fileName, /*fSkipped=*/true, error}});
+      nSkipped = ++fNSkippedFiles;
+   }
+   Warning("RDataFrame::Run", "skipping input file %s, which cannot be opened (%s): %zu file(s) skipped so far",
+           fileName.c_str(), error.c_str(), nSkipped);
+   return true;
+}
+
+std::vector<ROOT::RDF::Experimental::RFileStatus> RLoopManager::GetFileReport() const
+{
+   std::vector<std::pair<std::size_t, ROOT::RDF::Experimental::RFileStatus>> report;
+   {
+      std::lock_guard<std::mutex> lock(fFileReportMutex);
+      report = fFileReport;
+   }
+   std::stable_sort(report.begin(), report.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+   std::vector<ROOT::RDF::Experimental::RFileStatus> files;
+   files.reserve(report.size());
+   for (auto &entry : report)
+      files.push_back(std::move(entry.second));
+   return files;
+}
+
+std::vector<ROOT::RDF::Experimental::RSkippedFile> RLoopManager::GetSkippedFiles() const
+{
+   std::vector<ROOT::RDF::Experimental::RSkippedFile> skipped;
+   for (auto &file : GetFileReport()) {
+      if (file.fSkipped)
+         skipped.push_back({std::move(file.fFileName), std::move(file.fError)});
+   }
+   return skipped;
 }
 
 /// Return the list of default columns -- empty if none was provided when constructing the RDataFrame

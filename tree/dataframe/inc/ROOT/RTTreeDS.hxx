@@ -17,6 +17,7 @@
 
 #include "ROOT/RDataSource.hxx"
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -83,8 +84,32 @@ class RTTreeDS final : public ROOT::RDF::RDataSource {
 
    std::vector<std::pair<ULong64_t, ULong64_t>> GetTTreeEntryRange(TTree &tree);
    std::vector<std::pair<ULong64_t, ULong64_t>> GetTChainEntryRange(TChain &chain);
+   void HandlePassedChainFiles(TChain &chain, Int_t upToTreeNumber);
 
 public:
+   /// Called (by single-threaded event loops) if an input file cannot be opened, with its index, its name and the
+   /// error: returns whether to skip the file (true) or to stop the event loop with the error (false)
+   using FileErrorCallback_t = std::function<bool(std::size_t, const std::string &, const std::string &)>;
+   /// Called (by single-threaded event loops) for each input file whose entries are processed, with its index and name
+   using FileProcessedCallback_t = std::function<void(std::size_t, const std::string &)>;
+
+private:
+   FileErrorCallback_t fOnFileError;
+   FileProcessedCallback_t fOnFileProcessed;
+   /// The last tree of the chain whose file was reported to fOnFileProcessed/fOnFileError (single-threaded event loops)
+   Int_t fLastReportedTreeNumber = -1;
+   /// Whether the event loop ended because the last files of the chain could not be opened and were skipped
+   bool fSkippedFilesAtEnd = false;
+
+public:
+   /// Set the callbacks for the input files of single-threaded event loops (see FileErrorCallback_t and
+   /// FileProcessedCallback_t)
+   void SetFileCallbacks(FileErrorCallback_t onError, FileProcessedCallback_t onProcessed)
+   {
+      fOnFileError = std::move(onError);
+      fOnFileProcessed = std::move(onProcessed);
+   }
+
    RTTreeDS(std::shared_ptr<TTree> tree);
    RTTreeDS(std::shared_ptr<TTree> tree, const ROOT::TreeUtils::RFriendInfo &friendInfo);
    RTTreeDS(std::string_view treeName, TDirectory *dirPtr);

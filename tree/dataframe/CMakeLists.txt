@@ -84,6 +84,7 @@ ROOT_STANDARD_LIBRARY_PACKAGE(ROOTDataFrame
     ROOT/RDF/RJittedVariation.hxx
     ROOT/RDF/RLazyDSImpl.hxx
     ROOT/RDF/RLoopManager.hxx
+    ROOT/RDF/RFileErrorPolicy.hxx
     ROOT/RDF/RMergeableValue.hxx
     ROOT/RDF/RMetaData.hxx
     ROOT/RDF/RNodeBase.hxx

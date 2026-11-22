@@ -30,6 +30,9 @@
 #pragma link C++ class ROOT::Internal::RDF::CountHelper-;
 #pragma link C++ class ROOT::Detail::RDF::RRangeBase-;
 #pragma link C++ class ROOT::Detail::RDF::RLoopManager-;
+#pragma link C++ class ROOT::RDF::Experimental::RFileErrorPolicy-;
+#pragma link C++ class ROOT::RDF::Experimental::RSkippedFile-;
+#pragma link C++ class ROOT::RDF::Experimental::RFileStatus-;
 #pragma link C++ class ROOT::RDF::TH1DModel-;
 #pragma link C++ class ROOT::RDF::TH2DModel-;
 #pragma link C++ class ROOT::RDF::TH3DModel-;

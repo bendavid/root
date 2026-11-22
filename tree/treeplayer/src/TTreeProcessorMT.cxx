@@ -592,7 +592,20 @@ void TTreeProcessorMT::Process(std::function<void(TTreeReader &)> func)
       return;
    }
 
+   if (fFileErrorHandler)
+      Warning("TTreeProcessorMT::Process",
+              "files that cannot be opened cannot be skipped with friend trees, entry lists or global entry ranges: "
+              "an error in opening a file stops the processing");
+
    auto [allClusters, allEntries] = MakeClusters(fTreeNames, fFileNames, maxTasksPerFile, fPool, fGlobalRange);
+   if (fFileProcessedHandler) {
+      // the files with entries to process (with a global entry range, the clusters of the files outside of it are
+      // empty)
+      for (std::size_t i = 0; i < allClusters.size(); ++i) {
+         if (!allClusters[i].empty())
+            fFileProcessedHandler(i, fFileNames[i]);
+      }
+   }
    // The (global) entry ranges of the tasks, for the TTreeCache: with an entry list, the tasks are ranges of entry
    // list positions instead, one per cluster
    auto treeRanges = allClusters;
@@ -685,8 +698,22 @@ void TTreeProcessorMT::ProcessFilesWithLocalClusters(const std::function<void(TT
             const auto &fileName = fFileNames[assignment->fFileIdx];
             const auto &treeName = fTreeNames[assignment->fFileIdx];
             if (assignment->fKind == Scheduler_t::EKind::kOpenFile) {
-               std::tie(file, tree) = OpenTreeForProcessing(fileName, treeName);
-               tasks = std::make_shared<RFileTasks>(RFileTasks{FuseClusters(GetClusterRanges(*tree), maxTasksPerFile)});
+               try {
+                  std::tie(file, tree) = OpenTreeForProcessing(fileName, treeName);
+                  tasks =
+                     std::make_shared<RFileTasks>(RFileTasks{FuseClusters(GetClusterRanges(*tree), maxTasksPerFile)});
+               } catch (const std::exception &e) {
+                  // None of the entries of the file has been processed: it can be skipped
+                  if (!fFileErrorHandler || !fFileErrorHandler(assignment->fFileIdx, fileName, e))
+                     throw;
+                  tree = nullptr;
+                  file.reset();
+                  tasks.reset();
+                  scheduler.Publish(worker, 0, nullptr);
+                  continue;
+               }
+               if (fFileProcessedHandler)
+                  fFileProcessedHandler(assignment->fFileIdx, fileName);
                scheduler.Publish(worker, tasks->fRanges.size(), tasks);
                continue;
             }
